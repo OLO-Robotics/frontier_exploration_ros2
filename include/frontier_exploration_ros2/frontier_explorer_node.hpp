@@ -24,6 +24,7 @@ limitations under the License.
 #include <vector>
 
 #include <geometry_msgs/msg/pose.hpp>
+#include <map_msgs/msg/occupancy_grid_update.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -58,6 +59,8 @@ private:
   void occupancyGridCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void costmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void localCostmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+  void costmapUpdateCallback(const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg);
+  void localCostmapUpdateCallback(const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg);
   void publishCompletionEvent();
 
   std::optional<geometry_msgs::msg::Pose> getCurrentPose();
@@ -116,6 +119,11 @@ private:
   bool autostart_{true};
   bool control_service_enabled_{true};
   bool map_qos_autodetect_on_startup_{false};
+  std::string costmap_updates_topic_;
+  std::string local_costmap_updates_topic_;
+  // Latest costmaps, kept so incremental updates have a grid to patch.
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr costmap_msg_;
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr local_costmap_msg_;
   double map_qos_autodetect_timeout_s_{2.0};
 
   enum class RuntimeState
@@ -146,6 +154,8 @@ private:
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr local_costmap_sub_;
+  rclcpp::Subscription<map_msgs::msg::OccupancyGridUpdate>::SharedPtr costmap_updates_sub_;
+  rclcpp::Subscription<map_msgs::msg::OccupancyGridUpdate>::SharedPtr local_costmap_updates_sub_;
   rclcpp::TimerBase::SharedPtr map_autodetect_timer_;
   rclcpp::TimerBase::SharedPtr map_processing_timer_;
   rclcpp::TimerBase::SharedPtr suppression_watchdog_timer_;

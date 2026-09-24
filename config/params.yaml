@@ -14,8 +14,13 @@ frontier_explorer:
       map: /map
       # Global costmap topic used to filter candidate frontiers.
       costmap: /global_costmap/costmap
+      # Incremental global costmap updates. Empty relies on full costmap messages only,
+      # which Nav2 sends on geometry changes unless `always_send_full_costmap` is set.
+      costmap_updates: /global_costmap/costmap_updates
       # Local costmap topic used to invalidate nearby blocked frontier goals.
       local_costmap: /local_costmap/costmap
+      # Incremental local costmap updates. Empty relies on full costmap messages only.
+      local_costmap_updates: /local_costmap/costmap_updates
       # MarkerArray topic used for frontier visualization in RViz.
       frontier_markers: /explore/frontiers
       # Selected frontier target, published only at debug log level.

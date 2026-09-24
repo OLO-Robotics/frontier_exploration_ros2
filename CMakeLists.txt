@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(generate_parameter_library REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(map_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -79,6 +80,7 @@ target_link_libraries(${PROJECT_NAME}_node
 ament_target_dependencies(${PROJECT_NAME}_node
   action_msgs
   geometry_msgs
+  map_msgs
   nav2_msgs
   nav_msgs
   rclcpp
@@ -271,6 +273,17 @@ if(BUILD_TESTING)
     nav_msgs
   )
 
+  ament_add_gtest(test_costmap_update
+    test/test_costmap_update.cpp
+  )
+  target_include_directories(test_costmap_update PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_costmap_update
+    map_msgs
+    nav_msgs
+  )
+
   ament_add_gtest(test_control_service_and_idle
     test/test_control_service_and_idle.cpp
   )
@@ -286,6 +299,7 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_control_service_and_idle
     action_msgs
     geometry_msgs
+    map_msgs
     nav2_msgs
     nav_msgs
     rclcpp
@@ -301,7 +315,9 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_dependencies(
   action_msgs
+  generate_parameter_library
   geometry_msgs
+  map_msgs
   nav2_msgs
   nav_msgs
   rclcpp

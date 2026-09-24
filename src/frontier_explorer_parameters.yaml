@@ -30,6 +30,11 @@ frontier_explorer_params:
       description: "Global costmap used to validate frontiers and goals."
       validation:
         not_empty<>: []
+    costmap_updates:
+      type: string
+      default_value: "global_costmap/costmap_updates"
+      read_only: true
+      description: "Incremental global costmap updates; empty relies on full costmap messages only."
     local_costmap:
       type: string
       default_value: "local_costmap/costmap"
@@ -37,6 +42,11 @@ frontier_explorer_params:
       description: "Local costmap used for near-field blocked-goal checks."
       validation:
         not_empty<>: []
+    local_costmap_updates:
+      type: string
+      default_value: "local_costmap/costmap_updates"
+      read_only: true
+      description: "Incremental local costmap updates; empty relies on full costmap messages only."
     frontier_markers:
       type: string
       default_value: "explore/frontiers"

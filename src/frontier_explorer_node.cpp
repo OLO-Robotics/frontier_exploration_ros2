@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 #include "frontier_exploration_ros2/frontier_explorer_node.hpp"
+#include "frontier_exploration_ros2/costmap_update.hpp"
 #include "frontier_exploration_ros2/nav2_compat.hpp"
 #include "frontier_explorer_parameters.hpp"
 
@@ -148,6 +149,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       this->get_logger(),
       "control.service_enabled=false is ignored when control.autostart=false; control service remains enabled");
   }
+  costmap_updates_topic_ = params.topics.costmap_updates;
+  local_costmap_updates_topic_ = params.topics.local_costmap_updates;
   completion_event_config_.enabled = params.completion.event_enabled;
   completion_event_config_.topic = params.topics.completion_event;
 
@@ -479,6 +482,18 @@ void FrontierExplorerNode::startExplorationRuntime()
     params_.local_costmap_topic,
     topic_qos_profiles_.make_local_costmap_qos(),
     std::bind(&FrontierExplorerNode::localCostmapCallback, this, std::placeholders::_1));
+  if (!costmap_updates_topic_.empty()) {
+    costmap_updates_sub_ = this->create_subscription<map_msgs::msg::OccupancyGridUpdate>(
+      costmap_updates_topic_,
+      topic_qos_profiles_.make_costmap_qos(),
+      std::bind(&FrontierExplorerNode::costmapUpdateCallback, this, std::placeholders::_1));
+  }
+  if (!local_costmap_updates_topic_.empty()) {
+    local_costmap_updates_sub_ = this->create_subscription<map_msgs::msg::OccupancyGridUpdate>(
+      local_costmap_updates_topic_,
+      topic_qos_profiles_.make_local_costmap_qos(),
+      std::bind(&FrontierExplorerNode::localCostmapUpdateCallback, this, std::placeholders::_1));
+  }
   if (params_.map_processing_rate_hz > 0.0) {
     if (effective_map_processing_rate_hz_.has_value()) {
       ensureMapProcessingTimer();
@@ -530,6 +545,10 @@ void FrontierExplorerNode::enterColdIdle()
   map_sub_.reset();
   costmap_sub_.reset();
   local_costmap_sub_.reset();
+  costmap_updates_sub_.reset();
+  local_costmap_updates_sub_.reset();
+  costmap_msg_.reset();
+  local_costmap_msg_.reset();
   map_autodetect_timer_.reset();
   map_processing_timer_.reset();
   suppression_watchdog_timer_.reset();
@@ -1038,7 +1057,25 @@ void FrontierExplorerNode::costmapCallback(const nav_msgs::msg::OccupancyGrid::C
   if (runtime_state_ != RuntimeState::RUNNING) {
     return;
   }
+  costmap_msg_ = msg;
   core_->costmapCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::costmapUpdateCallback(
+  const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg)
+{
+  if (runtime_state_ != RuntimeState::RUNNING || !costmap_msg_) {
+    return;
+  }
+  auto patched = apply_occupancy_grid_update(*costmap_msg_, *msg);
+  if (!patched) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Dropping global costmap update outside the current grid; waiting for a full costmap");
+    return;
+  }
+  costmap_msg_ = patched;
+  core_->costmapCallback(OccupancyGrid2d(costmap_msg_));
 }
 
 void FrontierExplorerNode::localCostmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
@@ -1046,7 +1083,25 @@ void FrontierExplorerNode::localCostmapCallback(const nav_msgs::msg::OccupancyGr
   if (runtime_state_ != RuntimeState::RUNNING) {
     return;
   }
+  local_costmap_msg_ = msg;
   core_->localCostmapCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::localCostmapUpdateCallback(
+  const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg)
+{
+  if (runtime_state_ != RuntimeState::RUNNING || !local_costmap_msg_) {
+    return;
+  }
+  auto patched = apply_occupancy_grid_update(*local_costmap_msg_, *msg);
+  if (!patched) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Dropping local costmap update outside the current grid; waiting for a full costmap");
+    return;
+  }
+  local_costmap_msg_ = patched;
+  core_->localCostmapCallback(OccupancyGrid2d(local_costmap_msg_));
 }
 
 void FrontierExplorerNode::publishCompletionEvent()
