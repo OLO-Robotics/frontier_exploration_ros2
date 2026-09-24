@@ -26,16 +26,16 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
+#include <std_srvs/srv/trigger.hpp>
+
 #include "frontier_exploration_ros2/frontier_explorer_node.hpp"
-#include "frontier_exploration_ros2/srv/control_exploration.hpp"
-#include "frontier_exploration_ctl_detail.hpp"
 
 namespace frontier_exploration_ros2
 {
 namespace
 {
 
-using ControlExploration = frontier_exploration_ros2::srv::ControlExploration;
+using Trigger = std_srvs::srv::Trigger;
 
 geometry_msgs::msg::Pose make_pose(double x = 0.0, double y = 0.0)
 {
@@ -193,28 +193,20 @@ protected:
     executor_->add_node(node_);
   }
 
-  std::shared_ptr<ControlExploration::Response> call_control_service(
-    uint8_t action,
-    double delay_seconds = 0.0,
-    bool quit_after_stop = false)
+  std::shared_ptr<Trigger::Response> call_trigger(const std::string & service_name)
   {
-    auto client = helper_node_->create_client<ControlExploration>("/control_exploration");
+    auto client = helper_node_->create_client<Trigger>(service_name);
     if (!client->wait_for_service(std::chrono::seconds(2))) {
-      ADD_FAILURE() << "control_exploration service did not become ready";
+      ADD_FAILURE() << service_name << " did not become ready";
       return nullptr;
     }
 
-    auto request = std::make_shared<ControlExploration::Request>();
-    request->action = action;
-    request->delay_seconds = static_cast<float>(delay_seconds);
-    request->quit_after_stop = quit_after_stop;
-
-    auto future = client->async_send_request(request);
+    auto future = client->async_send_request(std::make_shared<Trigger::Request>());
     if (
       executor_->spin_until_future_complete(future, std::chrono::seconds(2)) !=
       rclcpp::FutureReturnCode::SUCCESS)
     {
-      ADD_FAILURE() << "control_exploration service call timed out";
+      ADD_FAILURE() << service_name << " call timed out";
       return nullptr;
     }
     return future.get();
@@ -240,7 +232,7 @@ protected:
     bool expected_available,
     std::chrono::milliseconds timeout = std::chrono::milliseconds(1000))
   {
-    auto client = helper_node_->create_client<ControlExploration>("/control_exploration");
+    auto client = helper_node_->create_client<Trigger>("/frontier_explorer/start");
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
       executor_->spin_some();
@@ -258,31 +250,6 @@ protected:
   rclcpp::Node::SharedPtr helper_node_;
   std::shared_ptr<FrontierExplorerNode> node_;
 };
-
-TEST(ControlCliParserTests, ParsesImmediateStart)
-{
-  const auto parsed = parse_control_command_args({"start"});
-  ASSERT_TRUE(parsed.ok);
-  EXPECT_EQ(parsed.command.action, ControlExploration::Request::ACTION_START);
-  EXPECT_DOUBLE_EQ(parsed.command.delay_seconds, 0.0);
-  EXPECT_FALSE(parsed.command.quit_after_stop);
-  EXPECT_EQ(parsed.command.service_name, "control_exploration");
-}
-
-TEST(ControlCliParserTests, ParsesDelayedStopWithQuit)
-{
-  const auto parsed = parse_control_command_args({"stop", "-t", "10", "-q"});
-  ASSERT_TRUE(parsed.ok);
-  EXPECT_EQ(parsed.command.action, ControlExploration::Request::ACTION_STOP);
-  EXPECT_DOUBLE_EQ(parsed.command.delay_seconds, 10.0);
-  EXPECT_TRUE(parsed.command.quit_after_stop);
-}
-
-TEST(ControlCliParserTests, RejectsQuitOnStart)
-{
-  const auto parsed = parse_control_command_args({"start", "-q"});
-  EXPECT_FALSE(parsed.ok);
-}
 
 TEST_F(FrontierControlNodeTests, AutostartFalseKeepsSubscriptionsInactive)
 {
@@ -324,28 +291,16 @@ TEST_F(FrontierControlNodeTests, StartServiceActivatesSubscriptions)
 {
   create_node(false);
 
-  const auto response = call_control_service(ControlExploration::Request::ACTION_START);
+  const auto response = call_trigger("/frontier_explorer/start");
   ASSERT_NE(response, nullptr);
-  ASSERT_TRUE(response->accepted);
-  EXPECT_FALSE(response->scheduled);
-  EXPECT_EQ(response->state, ControlExploration::Request::STATE_RUNNING);
-
+  EXPECT_TRUE(response->success);
   ASSERT_TRUE(wait_for_condition([this]() { return node_->hasActiveExplorationSubscriptions(); }));
-}
 
-TEST_F(FrontierControlNodeTests, DelayedStartServiceActivatesSubscriptionsLater)
-{
-  create_node(false);
-
-  const auto response = call_control_service(ControlExploration::Request::ACTION_START, 0.1);
-  ASSERT_NE(response, nullptr);
-  ASSERT_TRUE(response->accepted);
-  EXPECT_TRUE(response->scheduled);
-  EXPECT_EQ(response->state, ControlExploration::Request::STATE_START_SCHEDULED);
-
-  ASSERT_TRUE(wait_for_condition(
-    [this]() { return node_->hasActiveExplorationSubscriptions(); },
-    std::chrono::milliseconds(2000)));
+  const auto repeated = call_trigger("/frontier_explorer/start");
+  ASSERT_NE(repeated, nullptr);
+  EXPECT_TRUE(repeated->success);
+  EXPECT_EQ(repeated->message, "Exploration is already running");
+  EXPECT_TRUE(node_->hasActiveExplorationSubscriptions());
 }
 
 TEST_F(FrontierControlNodeTests, StopServiceReturnsNodeToColdIdle)
@@ -353,68 +308,26 @@ TEST_F(FrontierControlNodeTests, StopServiceReturnsNodeToColdIdle)
   create_node(true);
   ASSERT_TRUE(wait_for_condition([this]() { return node_->hasActiveExplorationSubscriptions(); }));
 
-  const auto response = call_control_service(ControlExploration::Request::ACTION_STOP);
+  const auto response = call_trigger("/frontier_explorer/stop");
   ASSERT_NE(response, nullptr);
-  ASSERT_TRUE(response->accepted);
-  EXPECT_FALSE(response->scheduled);
-  EXPECT_EQ(response->state, ControlExploration::Request::STATE_IDLE);
-
+  EXPECT_TRUE(response->success);
   ASSERT_TRUE(wait_for_condition([this]() { return !node_->hasActiveExplorationSubscriptions(); }));
+
+  const auto restarted = call_trigger("/frontier_explorer/start");
+  ASSERT_NE(restarted, nullptr);
+  EXPECT_TRUE(restarted->success);
+  EXPECT_TRUE(wait_for_condition([this]() { return node_->hasActiveExplorationSubscriptions(); }));
 }
 
-TEST_F(FrontierControlNodeTests, DelayedStopIsRejectedWhileColdIdle)
+TEST_F(FrontierControlNodeTests, StopWhileIdleIsANoOp)
 {
   create_node(false);
-  ASSERT_TRUE(wait_for_condition([this]() { return !node_->hasActiveExplorationSubscriptions(); }));
 
-  const auto response = call_control_service(ControlExploration::Request::ACTION_STOP, 0.1);
+  const auto response = call_trigger("/frontier_explorer/stop");
   ASSERT_NE(response, nullptr);
-  EXPECT_FALSE(response->accepted);
-  EXPECT_FALSE(response->scheduled);
-  EXPECT_EQ(response->state, ControlExploration::Request::STATE_IDLE);
-}
-
-TEST_F(FrontierControlNodeTests, ImmediateStartClearsPendingScheduledStop)
-{
-  create_node(true);
-  ASSERT_TRUE(wait_for_condition([this]() { return node_->hasActiveExplorationSubscriptions(); }));
-
-  const auto scheduled_stop = call_control_service(ControlExploration::Request::ACTION_STOP, 0.2);
-  ASSERT_NE(scheduled_stop, nullptr);
-  ASSERT_TRUE(scheduled_stop->accepted);
-  EXPECT_TRUE(scheduled_stop->scheduled);
-  EXPECT_EQ(scheduled_stop->state, ControlExploration::Request::STATE_STOP_SCHEDULED);
-
-  const auto start_response = call_control_service(ControlExploration::Request::ACTION_START);
-  ASSERT_NE(start_response, nullptr);
-  EXPECT_TRUE(start_response->accepted);
-  EXPECT_FALSE(start_response->scheduled);
-  EXPECT_EQ(start_response->state, ControlExploration::Request::STATE_RUNNING);
-
-  ASSERT_TRUE(wait_for_condition(
-    [this]() { return node_->hasActiveExplorationSubscriptions(); },
-    std::chrono::milliseconds(500)));
-  std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  executor_->spin_some();
-  EXPECT_TRUE(node_->hasActiveExplorationSubscriptions());
-}
-
-TEST_F(FrontierControlNodeTests, StopWithQuitRequestsOnlyExplorerExit)
-{
-  create_node(false);
-  ASSERT_TRUE(wait_for_condition([this]() { return !node_->hasActiveExplorationSubscriptions(); }));
-
-  const auto response = call_control_service(
-    ControlExploration::Request::ACTION_STOP,
-    0.0,
-    true);
-  ASSERT_NE(response, nullptr);
-  EXPECT_TRUE(response->accepted);
-  EXPECT_FALSE(response->scheduled);
-  EXPECT_EQ(response->state, ControlExploration::Request::STATE_SHUTDOWN_PENDING);
-
-  ASSERT_TRUE(wait_for_condition([this]() { return node_->quitRequested(); }));
-  EXPECT_TRUE(rclcpp::ok());
+  EXPECT_TRUE(response->success);
+  EXPECT_EQ(response->message, "Exploration is not running");
+  EXPECT_FALSE(node_->hasActiveExplorationSubscriptions());
 }
 
 }  // namespace

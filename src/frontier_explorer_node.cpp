@@ -194,19 +194,23 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     params_.optimized_map_topic,
     10);
   if (control_service_enabled_) {
-    control_service_ = this->create_service<srv::ControlExploration>(
-      "control_exploration",
+    start_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "~/start",
       std::bind(
-        &FrontierExplorerNode::handleControlRequest,
-        this,
-        std::placeholders::_1,
-        std::placeholders::_2));
+        &FrontierExplorerNode::handleStartRequest, this,
+        std::placeholders::_1, std::placeholders::_2));
+    stop_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "~/stop",
+      std::bind(
+        &FrontierExplorerNode::handleStopRequest, this,
+        std::placeholders::_1, std::placeholders::_2));
     RCLCPP_INFO(
       this->get_logger(),
-      "Control service ready: '%s'",
-      control_service_->get_service_name());
+      "Control services ready: '%s', '%s'",
+      start_service_->get_service_name(),
+      stop_service_->get_service_name());
   } else {
-    RCLCPP_INFO(this->get_logger(), "Control service is disabled by configuration");
+    RCLCPP_INFO(this->get_logger(), "Control services are disabled by configuration");
   }
 
   // Core callbacks keep core logic independent from ROS transport and threading details.
@@ -321,13 +325,11 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       "Completion event enabled: topic='%s'",
       completion_event_config_.topic.c_str());
   }
-  if (!autostart_ && control_service_) {
+  if (!autostart_ && start_service_) {
     RCLCPP_INFO(
       this->get_logger(),
-      "Explorer is in cold idle. Send a start request via the '%s' service or use "
-      "'frontier_exploration_ctl start' or "
-      "'ros2 run frontier_exploration_ros2 frontier_exploration_ctl start'.",
-      control_service_->get_service_name());
+      "Explorer is idle. Call '%s' to start exploring.",
+      start_service_->get_service_name());
   }
   if (params_.frontier_suppression_enabled) {
     RCLCPP_INFO(
@@ -360,12 +362,7 @@ bool FrontierExplorerNode::hasActiveExplorationSubscriptions() const
 
 bool FrontierExplorerNode::hasControlService() const
 {
-  return static_cast<bool>(control_service_);
-}
-
-bool FrontierExplorerNode::quitRequested() const
-{
-  return quit_requested_;
+  return static_cast<bool>(start_service_) && static_cast<bool>(stop_service_);
 }
 
 void FrontierExplorerNode::createMapSubscription(rclcpp::DurabilityPolicy map_durability)
@@ -458,10 +455,7 @@ void FrontierExplorerNode::startExplorationRuntime()
 {
   exploration_finished_timer_.reset();
   completion_event_published_ = false;
-  pending_quit_after_stop_ = false;
-  quit_requested_ = false;
   runtime_state_ = RuntimeState::RUNNING;
-  ensureDeferredShutdownTimerCanceled();
   ensureStopCompletionTimerCanceled();
   core_->start_exploration_session();
 
@@ -574,15 +568,6 @@ void FrontierExplorerNode::enterColdIdle()
   }
 }
 
-void FrontierExplorerNode::ensureControlTimerCanceled()
-{
-  if (control_timer_) {
-    control_timer_->cancel();
-    control_timer_.reset();
-  }
-  scheduled_control_request_.reset();
-}
-
 void FrontierExplorerNode::ensureStopCompletionTimerCanceled()
 {
   if (stop_completion_timer_) {
@@ -591,236 +576,55 @@ void FrontierExplorerNode::ensureStopCompletionTimerCanceled()
   }
 }
 
-void FrontierExplorerNode::ensureDeferredShutdownTimerCanceled()
+void FrontierExplorerNode::requestStopExplorationRuntime(const std::string & reason)
 {
-  if (deferred_shutdown_timer_) {
-    deferred_shutdown_timer_->cancel();
-    deferred_shutdown_timer_.reset();
-  }
-}
-
-uint8_t FrontierExplorerNode::controlState() const
-{
-  if (scheduled_control_request_.has_value()) {
-    return scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_START ?
-           srv::ControlExploration::Request::STATE_START_SCHEDULED :
-           srv::ControlExploration::Request::STATE_STOP_SCHEDULED;
-  }
-
-  switch (runtime_state_) {
-    case RuntimeState::RUNNING:
-      return srv::ControlExploration::Request::STATE_RUNNING;
-    case RuntimeState::STOPPING:
-      return srv::ControlExploration::Request::STATE_STOPPING;
-    case RuntimeState::SHUTDOWN_PENDING:
-      return srv::ControlExploration::Request::STATE_SHUTDOWN_PENDING;
-    case RuntimeState::COLD_IDLE:
-    default:
-      return srv::ControlExploration::Request::STATE_IDLE;
-  }
-}
-
-std::string FrontierExplorerNode::controlStateMessage() const
-{
-  switch (controlState()) {
-    case srv::ControlExploration::Request::STATE_RUNNING:
-      return "running";
-    case srv::ControlExploration::Request::STATE_START_SCHEDULED:
-      return "start scheduled";
-    case srv::ControlExploration::Request::STATE_STOP_SCHEDULED:
-      return "stop scheduled";
-    case srv::ControlExploration::Request::STATE_STOPPING:
-      return "stopping";
-    case srv::ControlExploration::Request::STATE_SHUTDOWN_PENDING:
-      return "shutdown pending";
-    case srv::ControlExploration::Request::STATE_IDLE:
-    default:
-      return "idle";
-  }
-}
-
-void FrontierExplorerNode::scheduleControlRequest(
-  uint8_t action,
-  double delay_seconds,
-  bool quit_after_stop)
-{
-  ensureControlTimerCanceled();
-  scheduled_control_request_ = ScheduledControlRequest{action, quit_after_stop};
-  control_timer_ = this->create_wall_timer(
-    std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::duration<double>(delay_seconds)),
-    std::bind(&FrontierExplorerNode::controlTimerCallback, this));
-}
-
-void FrontierExplorerNode::requestStopExplorationRuntime(
-  bool quit_after_stop,
-  const std::string & reason)
-{
-  ensureControlTimerCanceled();
-  pending_quit_after_stop_ = quit_after_stop;
   core_->stop_exploration_session(reason);
   publishFrontierMarkers({});
   enterColdIdle();
 
   if (core_->ready_for_shutdown()) {
-    if (pending_quit_after_stop_) {
-      runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
-      deferred_shutdown_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(1),
-        std::bind(&FrontierExplorerNode::deferredShutdownCallback, this));
-    }
     return;
   }
 
+  // Wait for the cancelled Nav2 goal to settle before reporting idle.
   runtime_state_ = RuntimeState::STOPPING;
   stop_completion_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(50),
     std::bind(&FrontierExplorerNode::stopCompletionPollCallback, this));
 }
 
-void FrontierExplorerNode::handleControlRequest(
-  const std::shared_ptr<srv::ControlExploration::Request> request,
-  std::shared_ptr<srv::ControlExploration::Response> response)
+void FrontierExplorerNode::handleStartRequest(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-  const double delay_seconds = static_cast<double>(request->delay_seconds);
-  const bool start_is_scheduled =
-    scheduled_control_request_.has_value() &&
-    scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_START;
-  const bool stop_is_scheduled =
-    scheduled_control_request_.has_value() &&
-    scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_STOP;
-  if (delay_seconds < 0.0) {
-    response->accepted = false;
-    response->scheduled = false;
-    response->state = controlState();
-    response->message = "delay_seconds must be non-negative";
-    return;
-  }
-
-  if (request->quit_after_stop && request->action != srv::ControlExploration::Request::ACTION_STOP) {
-    response->accepted = false;
-    response->scheduled = false;
-    response->state = controlState();
-    response->message = "quit_after_stop is only valid for stop requests";
-    return;
-  }
-
-  if (
-    request->action != srv::ControlExploration::Request::ACTION_START &&
-    request->action != srv::ControlExploration::Request::ACTION_STOP)
-  {
-    response->accepted = false;
-    response->scheduled = false;
-    response->state = controlState();
-    response->message = "Unsupported control action";
-    return;
-  }
-
-  if (request->action == srv::ControlExploration::Request::ACTION_START) {
-    if (delay_seconds <= 0.0) {
-      // Immediate start is the strongest operator intent and should clear any stale timer.
-      ensureControlTimerCanceled();
-    }
-
-    if (runtime_state_ == RuntimeState::RUNNING) {
-      response->accepted = delay_seconds <= 0.0;
-      response->scheduled = false;
-      response->state = controlState();
-      response->message = delay_seconds <= 0.0 && stop_is_scheduled ?
-        "Exploration is already running; cleared scheduled stop" :
-        delay_seconds <= 0.0 ?
-        "Exploration is already running" :
-        "Cannot schedule a future start while exploration is already running";
+  switch (runtime_state_) {
+    case RuntimeState::RUNNING:
+      response->success = true;
+      response->message = "Exploration is already running";
       return;
-    }
-    if (runtime_state_ == RuntimeState::STOPPING || runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
-      response->accepted = false;
-      response->scheduled = false;
-      response->state = controlState();
-      response->message = "Exploration is stopping or shutting down";
+    case RuntimeState::STOPPING:
+      response->success = false;
+      response->message = "Exploration is still stopping";
       return;
-    }
-    if (delay_seconds > 0.0) {
-      scheduleControlRequest(request->action, delay_seconds, false);
-      response->accepted = true;
-      response->scheduled = true;
-      response->state = controlState();
-      response->message = "Scheduled exploration start";
+    case RuntimeState::COLD_IDLE:
+      startExplorationRuntime();
+      response->success = true;
+      response->message = "Exploration started";
       return;
-    }
-
-    startExplorationRuntime();
-    response->accepted = true;
-    response->scheduled = false;
-    response->state = controlState();
-    response->message = "Exploration started";
-    return;
   }
-
-  if (delay_seconds > 0.0) {
-    if (runtime_state_ == RuntimeState::COLD_IDLE && !start_is_scheduled) {
-      response->accepted = false;
-      response->scheduled = false;
-      response->state = controlState();
-      response->message = "Cannot schedule a stop while exploration is idle";
-      return;
-    }
-
-    scheduleControlRequest(request->action, delay_seconds, request->quit_after_stop);
-    response->accepted = true;
-    response->scheduled = true;
-    response->state = controlState();
-    response->message = "Scheduled exploration stop";
-    return;
-  }
-
-  if (runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
-    response->accepted = false;
-    response->scheduled = false;
-    response->state = controlState();
-    response->message = "Shutdown is already pending";
-    return;
-  }
-
-  requestStopExplorationRuntime(
-    request->quit_after_stop,
-    request->quit_after_stop ?
-    "Stopping exploration and shutting down the node" :
-    "Stopping exploration");
-  response->accepted = true;
-  response->scheduled = false;
-  response->state = controlState();
-  response->message = request->quit_after_stop ?
-    "Stopping exploration and preparing node shutdown" :
-    "Stopping exploration";
 }
 
-void FrontierExplorerNode::controlTimerCallback()
+void FrontierExplorerNode::handleStopRequest(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-  if (!scheduled_control_request_.has_value()) {
-    ensureControlTimerCanceled();
+  response->success = true;
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    response->message = "Exploration is not running";
     return;
   }
-
-  const ScheduledControlRequest scheduled_request = *scheduled_control_request_;
-  ensureControlTimerCanceled();
-
-  if (scheduled_request.action == srv::ControlExploration::Request::ACTION_START) {
-    if (runtime_state_ == RuntimeState::COLD_IDLE) {
-      startExplorationRuntime();
-    }
-    return;
-  }
-
-  if (runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
-    return;
-  }
-
-  requestStopExplorationRuntime(
-    scheduled_request.quit_after_stop,
-    scheduled_request.quit_after_stop ?
-    "Stopping exploration and shutting down the node" :
-    "Stopping exploration");
+  requestStopExplorationRuntime("Stopping exploration");
+  response->message = "Stopping exploration";
 }
 
 void FrontierExplorerNode::explorationFinishedCallback()
@@ -829,7 +633,7 @@ void FrontierExplorerNode::explorationFinishedCallback()
   exploration_finished_timer_.reset();
   if (runtime_state_ == RuntimeState::RUNNING) {
     RCLCPP_INFO(this->get_logger(), "Exploration finished; returning to idle");
-    requestStopExplorationRuntime(false, "Exploration finished");
+    requestStopExplorationRuntime("Exploration finished");
   }
 }
 
@@ -840,22 +644,7 @@ void FrontierExplorerNode::stopCompletionPollCallback()
   }
 
   ensureStopCompletionTimerCanceled();
-  if (pending_quit_after_stop_) {
-    runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
-    deferred_shutdown_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(1),
-      std::bind(&FrontierExplorerNode::deferredShutdownCallback, this));
-    return;
-  }
-
   runtime_state_ = RuntimeState::COLD_IDLE;
-}
-
-void FrontierExplorerNode::deferredShutdownCallback()
-{
-  ensureDeferredShutdownTimerCanceled();
-  runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
-  quit_requested_ = true;
 }
 
 void FrontierExplorerNode::mapAutodetectTimeoutCallback()

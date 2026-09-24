@@ -153,7 +153,7 @@ frontier_explorer_params:
       type: bool
       default_value: true
       read_only: true
-      description: "Expose the control_exploration service. Forced on when control.autostart is false."
+      description: "Expose the ~/start and ~/stop services. Forced on when control.autostart is false."
 
   map_processing:
     rate_hz:

@@ -29,16 +29,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install system dependencies
-        run: |
-          apt-get update
-          apt-get install -y qtbase5-dev
-
       - name: Install package dependencies
         run: |
+          apt-get update
           rosdep update
           rosdep install \
-            --from-paths . plugin/frontier_exploration_ros2_rviz \
+            --from-paths . \
             --ignore-src \
             --rosdistro "$ROS_DISTRO" \
             -r \
@@ -52,15 +48,3 @@ jobs:
             --build-base build-core \
             --install-base install \
             --packages-select frontier_exploration_ros2
-
-      - name: Build RViz plugin package
-        run: |
-          source /opt/ros/$ROS_DISTRO/setup.bash
-          source install/setup.bash
-          colcon build \
-            --event-handlers console_direct+ \
-            --base-paths . plugin/frontier_exploration_ros2_rviz \
-            --build-base build-all \
-            --install-base install \
-            --packages-select frontier_exploration_ros2_rviz \
-            --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
