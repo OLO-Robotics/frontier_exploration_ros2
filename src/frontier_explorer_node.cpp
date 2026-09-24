@@ -150,6 +150,15 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       "control.service_enabled=false is ignored when control.autostart=false; control service remains enabled");
   }
   costmap_updates_topic_ = params.topics.costmap_updates;
+  if (params.diagnostics.enabled) {
+    status_name_ = std::string(this->get_fully_qualified_name()) + ": exploration";
+    diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      params.diagnostics.topic, 10);
+    diagnostics_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(params.diagnostics.period_s)),
+      std::bind(&FrontierExplorerNode::publishStatus, this));
+  }
   local_costmap_updates_topic_ = params.topics.local_costmap_updates;
   completion_event_config_.enabled = params.completion.event_enabled;
   completion_event_config_.topic = params.topics.completion_event;
@@ -255,9 +264,11 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     };
   callbacks.log_warn = [this](const std::string & message) {
       RCLCPP_WARN(this->get_logger(), "%s", message.c_str());
+      status_.warning(message, this->now().seconds());
     };
   callbacks.log_error = [this](const std::string & message) {
       RCLCPP_ERROR(this->get_logger(), "%s", message.c_str());
+      status_.error(message, this->now().seconds());
     };
   core_ = std::make_unique<FrontierExplorerCore>(params_, callbacks);
   runtime_state_ = RuntimeState::COLD_IDLE;
@@ -325,6 +336,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       "Completion event enabled: topic='%s'",
       completion_event_config_.topic.c_str());
   }
+  publishStatus();
   if (!autostart_ && start_service_) {
     RCLCPP_INFO(
       this->get_logger(),
@@ -457,6 +469,7 @@ void FrontierExplorerNode::startExplorationRuntime()
   completion_event_published_ = false;
   runtime_state_ = RuntimeState::RUNNING;
   ensureStopCompletionTimerCanceled();
+  status_.session_started(this->now().seconds());
   core_->start_exploration_session();
 
   if (params_.frontier_suppression_enabled) {
@@ -582,15 +595,14 @@ void FrontierExplorerNode::requestStopExplorationRuntime(const std::string & rea
   publishFrontierMarkers({});
   enterColdIdle();
 
-  if (core_->ready_for_shutdown()) {
-    return;
+  if (!core_->ready_for_shutdown()) {
+    // Wait for the cancelled Nav2 goal to settle before reporting idle.
+    runtime_state_ = RuntimeState::STOPPING;
+    stop_completion_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(50),
+      std::bind(&FrontierExplorerNode::stopCompletionPollCallback, this));
   }
-
-  // Wait for the cancelled Nav2 goal to settle before reporting idle.
-  runtime_state_ = RuntimeState::STOPPING;
-  stop_completion_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(50),
-    std::bind(&FrontierExplorerNode::stopCompletionPollCallback, this));
+  publishStatus();
 }
 
 void FrontierExplorerNode::handleStartRequest(
@@ -633,6 +645,7 @@ void FrontierExplorerNode::explorationFinishedCallback()
   exploration_finished_timer_.reset();
   if (runtime_state_ == RuntimeState::RUNNING) {
     RCLCPP_INFO(this->get_logger(), "Exploration finished; returning to idle");
+    status_.session_finished(this->now().seconds());
     requestStopExplorationRuntime("Exploration finished");
   }
 }
@@ -645,6 +658,7 @@ void FrontierExplorerNode::stopCompletionPollCallback()
 
   ensureStopCompletionTimerCanceled();
   runtime_state_ = RuntimeState::COLD_IDLE;
+  publishStatus();
 }
 
 void FrontierExplorerNode::mapAutodetectTimeoutCallback()
@@ -963,8 +977,25 @@ std::optional<geometry_msgs::msg::Pose> FrontierExplorerNode::getCurrentPose()
   }
 }
 
+void FrontierExplorerNode::publishStatus()
+{
+  if (!diagnostics_pub_) {
+    return;
+  }
+  const auto stamp = this->now();
+  const auto runtime =
+    runtime_state_ == RuntimeState::RUNNING ? ExplorationStatus::Runtime::RUNNING :
+    runtime_state_ == RuntimeState::STOPPING ? ExplorationStatus::Runtime::STOPPING :
+    ExplorationStatus::Runtime::IDLE;
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = stamp;
+  array.status.push_back(status_.build(status_name_, runtime, stamp.seconds()));
+  diagnostics_pub_->publish(array);
+}
+
 void FrontierExplorerNode::publishFrontierMarkers(const FrontierSequence & frontiers)
 {
+  status_.frontiers_updated(frontiers.size());
   visualization_msgs::msg::MarkerArray marker_array;
   const auto publish_stamp = this->now();
 
@@ -1042,6 +1073,8 @@ void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & reque
   NavigateToPose::Goal goal_request;
   // Core provides fully prepared pose/action metadata in request.
   goal_request.pose = request.goal_pose;
+  status_.goal_dispatched(request.dispatch_id, request.goal_kind, request.goal_pose);
+  publishStatus();
 
   rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
   options.goal_response_callback = [this, dispatch_id = request.dispatch_id](
@@ -1072,6 +1105,9 @@ void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & reque
           });
       }
 
+      if (!accepted) {
+        status_.goal_rejected(dispatch_id);
+      }
       core_->goal_response_callback(
         dispatch_id,
         wrapped_handle,
@@ -1086,6 +1122,7 @@ void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & reque
       if (!feedback) {
         return;
       }
+      status_.goal_feedback(dispatch_id, feedback->distance_remaining);
       core_->feedback_callback(feedback->distance_remaining, dispatch_id);
     };
 
@@ -1101,16 +1138,19 @@ void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & reque
         error_msg = compat::extractNav2ResultErrorMessage(*wrapped_result.result);
       }
 
+      status_.goal_result(dispatch_id, static_cast<int8_t>(status));
       core_->get_result_callback(
         dispatch_id,
         status,
         error_code,
         error_msg);
+      publishStatus();
     };
 
   try {
     navigate_to_pose_client_->async_send_goal(goal_request, options);
   } catch (const std::exception & exc) {
+    status_.goal_rejected(request.dispatch_id);
     core_->goal_response_callback(
       request.dispatch_id,
       nullptr,

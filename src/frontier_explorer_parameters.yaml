@@ -70,6 +70,27 @@ frontier_explorer_params:
       validation:
         not_empty<>: []
 
+  diagnostics:
+    enabled:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Publish exploration state as a diagnostics status entry."
+    topic:
+      type: string
+      default_value: "/diagnostics"
+      read_only: true
+      description: "DiagnosticArray topic for the exploration status."
+      validation:
+        not_empty<>: []
+    period_s:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Status republish period; state changes publish immediately."
+      validation:
+        gt<>: [0.0]
+
   actions:
     navigate_to_pose:
       type: string

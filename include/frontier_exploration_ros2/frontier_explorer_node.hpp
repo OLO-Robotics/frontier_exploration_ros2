@@ -23,6 +23,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <map_msgs/msg/occupancy_grid_update.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
@@ -35,6 +36,7 @@ limitations under the License.
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include "frontier_exploration_ros2/exploration_status.hpp"
 #include "frontier_exploration_ros2/qos_utils.hpp"
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
@@ -61,6 +63,7 @@ private:
   void costmapUpdateCallback(const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg);
   void localCostmapUpdateCallback(const map_msgs::msg::OccupancyGridUpdate::ConstSharedPtr msg);
   void publishCompletionEvent();
+  void publishStatus();
 
   std::optional<geometry_msgs::msg::Pose> getCurrentPose();
   void publishFrontierMarkers(const FrontierSequence & frontiers);
@@ -113,6 +116,8 @@ private:
   bool control_service_enabled_{true};
   bool map_qos_autodetect_on_startup_{false};
   std::string costmap_updates_topic_;
+  ExplorationStatus status_;
+  std::string status_name_;
   std::string local_costmap_updates_topic_;
   // Latest costmaps, kept so incremental updates have a grid to patch.
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr costmap_msg_;
@@ -136,6 +141,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr frontier_marker_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_frontier_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr optimized_map_pub_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
 
   // Subscriptions and timers.
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
@@ -148,6 +154,7 @@ private:
   rclcpp::TimerBase::SharedPtr suppression_watchdog_timer_;
   rclcpp::TimerBase::SharedPtr stop_completion_timer_;
   rclcpp::TimerBase::SharedPtr exploration_finished_timer_;
+  rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   RuntimeState runtime_state_{RuntimeState::COLD_IDLE};
   bool suppression_activation_logged_{false};
   std::optional<std::chrono::steady_clock::time_point> suppression_activation_at_;

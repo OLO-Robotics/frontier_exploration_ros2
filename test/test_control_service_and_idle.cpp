@@ -26,6 +26,7 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include "frontier_exploration_ros2/frontier_explorer_node.hpp"
@@ -246,8 +247,27 @@ protected:
     return client->wait_for_service(std::chrono::milliseconds(0)) == expected_available;
   }
 
+  // Latest exploration state reported on /diagnostics, or empty before the first message.
+  std::string reported_state()
+  {
+    if (!diagnostics_sub_) {
+      diagnostics_sub_ = helper_node_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+        "/diagnostics", 10,
+        [this](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr msg) {
+          for (const auto & status : msg->status) {
+            if (status.name == "/frontier_explorer: exploration") {
+              reported_state_ = status.message;
+            }
+          }
+        });
+    }
+    return reported_state_;
+  }
+
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   rclcpp::Node::SharedPtr helper_node_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_sub_;
+  std::string reported_state_;
   std::shared_ptr<FrontierExplorerNode> node_;
 };
 
@@ -317,6 +337,19 @@ TEST_F(FrontierControlNodeTests, StopServiceReturnsNodeToColdIdle)
   ASSERT_NE(restarted, nullptr);
   EXPECT_TRUE(restarted->success);
   EXPECT_TRUE(wait_for_condition([this]() { return node_->hasActiveExplorationSubscriptions(); }));
+}
+
+TEST_F(FrontierControlNodeTests, DiagnosticsFollowStartAndStop)
+{
+  reported_state();
+  create_node(false);
+  ASSERT_TRUE(wait_for_condition([this]() { return reported_state() == "idle"; }, std::chrono::milliseconds(3000)));
+
+  ASSERT_NE(call_trigger("/frontier_explorer/start"), nullptr);
+  EXPECT_TRUE(wait_for_condition([this]() { return reported_state() == "exploring"; }, std::chrono::milliseconds(3000)));
+
+  ASSERT_NE(call_trigger("/frontier_explorer/stop"), nullptr);
+  EXPECT_TRUE(wait_for_condition([this]() { return reported_state() == "idle"; }, std::chrono::milliseconds(3000)));
 }
 
 TEST_F(FrontierControlNodeTests, StopWhileIdleIsANoOp)

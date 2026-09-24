@@ -30,6 +30,13 @@ frontier_explorer:
       # Requires `completion.event_enabled: true`.
       completion_event: exploration_complete
 
+    diagnostics:
+      # Publish exploration state (state, current goal, goal counts) as a DiagnosticStatus
+      # named "<node>: exploration". State changes publish immediately, otherwise every period.
+      enabled: true
+      topic: /diagnostics
+      period_s: 1.0
+
     actions:
       # Nav2 NavigateToPose action name.
       navigate_to_pose: navigate_to_pose

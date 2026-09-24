@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(generate_parameter_library REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(map_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
@@ -56,6 +57,7 @@ ament_target_dependencies(${PROJECT_NAME}_core
 )
 
 add_library(${PROJECT_NAME}_node
+  src/exploration_status.cpp
   src/frontier_explorer_node.cpp
 )
 target_include_directories(${PROJECT_NAME}_node PUBLIC
@@ -71,6 +73,7 @@ target_link_libraries(${PROJECT_NAME}_node
 )
 ament_target_dependencies(${PROJECT_NAME}_node
   action_msgs
+  diagnostic_msgs
   geometry_msgs
   map_msgs
   nav2_msgs
@@ -263,6 +266,13 @@ if(BUILD_TESTING)
     nav_msgs
   )
 
+  ament_add_gtest(test_exploration_status
+    test/test_exploration_status.cpp
+  )
+  target_link_libraries(test_exploration_status
+    ${PROJECT_NAME}_node
+  )
+
   ament_add_gtest(test_control_service_and_idle
     test/test_control_service_and_idle.cpp
   )
@@ -276,6 +286,7 @@ if(BUILD_TESTING)
   )
   ament_target_dependencies(test_control_service_and_idle
     action_msgs
+    diagnostic_msgs
     geometry_msgs
     map_msgs
     nav2_msgs
@@ -294,6 +305,7 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_dependencies(
   action_msgs
+  diagnostic_msgs
   generate_parameter_library
   geometry_msgs
   map_msgs
