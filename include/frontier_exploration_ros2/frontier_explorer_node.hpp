@@ -87,6 +87,7 @@ private:
   void controlTimerCallback();
   void stopCompletionPollCallback();
   void deferredShutdownCallback();
+  void explorationFinishedCallback();
   void handleControlRequest(
     const std::shared_ptr<srv::ControlExploration::Request> request,
     std::shared_ptr<srv::ControlExploration::Response> response);
@@ -162,6 +163,7 @@ private:
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr stop_completion_timer_;
   rclcpp::TimerBase::SharedPtr deferred_shutdown_timer_;
+  rclcpp::TimerBase::SharedPtr exploration_finished_timer_;
   std::optional<ScheduledControlRequest> scheduled_control_request_;
   bool pending_quit_after_stop_{false};
   bool quit_requested_{false};

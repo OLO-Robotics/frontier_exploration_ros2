@@ -791,6 +791,15 @@ bool FrontierExplorerCore::dispatch_pending_frontier_goal(
   return true;
 }
 
+void FrontierExplorerCore::mark_exploration_finished()
+{
+  if (return_to_start_completed) {
+    return;
+  }
+  return_to_start_completed = true;
+  callbacks.on_exploration_finished();
+}
+
 void FrontierExplorerCore::handle_exploration_complete(const geometry_msgs::msg::Pose & current_pose)
 {
   callbacks.on_exploration_complete();
@@ -802,13 +811,13 @@ void FrontierExplorerCore::handle_exploration_complete(const geometry_msgs::msg:
   if (!params.return_to_start_on_complete || !start_pose.has_value())
   {
     // Mark completion when return-to-start is disabled (or unavailable) to stop repeated no-frontier scans.
-    return_to_start_completed = true;
+    mark_exploration_finished();
     return;
   }
 
   if (is_pose_within_xy_tolerance(current_pose, start_pose->pose)) {
     // Exploration already ended near start; avoid issuing a redundant return goal.
-    return_to_start_completed = true;
+    mark_exploration_finished();
     callbacks.log_info("Exploration finished at the start pose");
     return;
   }
@@ -1081,7 +1090,7 @@ void FrontierExplorerCore::get_result_callback(
 
     if (status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED && goal_kind == "return_to_start") {
       // Return path uses dedicated completion latch consumed by scheduler.
-      return_to_start_completed = true;
+      mark_exploration_finished();
       callbacks.log_info("Returned to start pose");
     } else if (
       status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED &&

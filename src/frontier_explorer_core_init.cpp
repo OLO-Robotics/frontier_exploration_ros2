@@ -119,6 +119,9 @@ FrontierExplorerCore::FrontierExplorerCore(
   if (!callbacks.on_exploration_complete) {
     callbacks.on_exploration_complete = []() {};
   }
+  if (!callbacks.on_exploration_finished) {
+    callbacks.on_exploration_finished = []() {};
+  }
   if (!callbacks.debug_outputs_enabled) {
     callbacks.debug_outputs_enabled = []() {return false;};
   }

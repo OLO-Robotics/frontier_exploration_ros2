@@ -234,6 +234,12 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   callbacks.on_exploration_complete = [this]() {
       this->publishCompletionEvent();
     };
+  callbacks.on_exploration_finished = [this]() {
+      // Deferred so the core is not stopped from inside its own call stack.
+      exploration_finished_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(1),
+        std::bind(&FrontierExplorerNode::explorationFinishedCallback, this));
+    };
   callbacks.debug_outputs_enabled = [this]() {
       return this->debugOutputsEnabled();
     };
@@ -450,6 +456,7 @@ bool FrontierExplorerNode::maybeFinalizeMapProcessingRateEstimate()
 
 void FrontierExplorerNode::startExplorationRuntime()
 {
+  exploration_finished_timer_.reset();
   completion_event_published_ = false;
   pending_quit_after_stop_ = false;
   quit_requested_ = false;
@@ -814,6 +821,16 @@ void FrontierExplorerNode::controlTimerCallback()
     scheduled_request.quit_after_stop ?
     "Stopping exploration and shutting down the node" :
     "Stopping exploration");
+}
+
+void FrontierExplorerNode::explorationFinishedCallback()
+{
+  exploration_finished_timer_->cancel();
+  exploration_finished_timer_.reset();
+  if (runtime_state_ == RuntimeState::RUNNING) {
+    RCLCPP_INFO(this->get_logger(), "Exploration finished; returning to idle");
+    requestStopExplorationRuntime(false, "Exploration finished");
+  }
 }
 
 void FrontierExplorerNode::stopCompletionPollCallback()

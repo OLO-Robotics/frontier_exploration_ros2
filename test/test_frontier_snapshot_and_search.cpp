@@ -16,11 +16,13 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <action_msgs/msg/goal_status.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 
 #include <future>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -370,12 +372,16 @@ TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
   core->params.return_to_start_on_complete = false;
 
   int completion_calls = 0;
+  int finished_calls = 0;
   int frontier_search_calls = 0;
   core->callbacks.get_current_pose = []() {
       return std::optional<geometry_msgs::msg::Pose>(make_pose(2.0, 2.0));
     };
   core->callbacks.on_exploration_complete = [&completion_calls]() {
       completion_calls += 1;
+    };
+  core->callbacks.on_exploration_finished = [&finished_calls]() {
+      finished_calls += 1;
     };
   core->callbacks.frontier_search = [&frontier_search_calls](
     const geometry_msgs::msg::Pose &,
@@ -395,8 +401,55 @@ TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
   core->try_send_next_goal();
 
   EXPECT_EQ(completion_calls, 1);
+  EXPECT_EQ(finished_calls, 1);
   EXPECT_EQ(frontier_search_calls, 1);
   EXPECT_TRUE(core->return_to_start_completed);
+}
+
+TEST(FrontierSearchTests, ExplorationFinishesOnlyAfterReturningToStart)
+{
+  auto core = make_snapshot_core();
+  core->params.return_to_start_on_complete = true;
+  core->start_pose = geometry_msgs::msg::PoseStamped{};
+  core->start_pose->pose = make_pose(0.0, 0.0);
+
+  int finished_calls = 0;
+  std::vector<std::string> dispatched_kinds;
+  core->callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(2.0, 2.0));
+    };
+  core->callbacks.on_exploration_finished = [&finished_calls]() {
+      finished_calls += 1;
+    };
+  core->callbacks.dispatch_goal_request = [&dispatched_kinds](const GoalDispatchRequest & request) {
+      dispatched_kinds.push_back(request.goal_kind);
+    };
+  core->callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.robot_map_cell = {2, 2};
+      return result;
+    };
+
+  core->try_send_next_goal();
+  ASSERT_EQ(dispatched_kinds, std::vector<std::string>{"return_to_start"});
+  EXPECT_EQ(finished_calls, 0);
+
+  core->get_result_callback(
+    core->current_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_SUCCEEDED,
+    0,
+    "");
+  core->try_send_next_goal();
+
+  EXPECT_EQ(finished_calls, 1);
+  EXPECT_EQ(dispatched_kinds.size(), 1U);
 }
 
 // Frontier snapshot cache behavior.

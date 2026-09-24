@@ -137,6 +137,8 @@ struct FrontierExplorerCoreCallbacks
   std::function<void(const nav_msgs::msg::OccupancyGrid &)> publish_optimized_map;
   // Completion hook lets the ROS-facing node trigger optional post-completion side effects.
   std::function<void()> on_exploration_complete;
+  // Fires once per session when exploration is over, after any return to start.
+  std::function<void()> on_exploration_finished;
   std::function<bool()> debug_outputs_enabled;
   std::function<void(const std::string &)> log_debug;
   std::function<void(const std::string &)> log_info;
@@ -273,6 +275,7 @@ public:
   [[nodiscard]] bool ready_for_shutdown() const;
 
   void handle_exploration_complete(const geometry_msgs::msg::Pose & current_pose);
+  void mark_exploration_finished();
   void handle_all_frontiers_suppressed(const geometry_msgs::msg::Pose & current_pose);
   void consider_cancel_suppressed_return_to_start();
 
