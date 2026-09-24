@@ -48,6 +48,15 @@ In benchmarks against a variety of exploration algorithms under shared simulatio
 
 The package successfully completed explorations with up to 99.9% coverage across challenging environments, including complex layouts, maze-like structures, dense obstacle areas, zigzag inducing areas, and large open spaces.
 
+> [!NOTE]
+> This is the OLO Robotics fork of [mertgulerx/frontier_exploration_ros2](https://github.com/mertgulerx/frontier_exploration_ros2). It differs from upstream in:
+>
+> - grouped, validated parameters declared with [`generate_parameter_library`](https://github.com/PickNikRobotics/generate_parameter_library), such as `topics.map` and `ordering.solver` (see [Parameter Reference](#parameter-reference))
+> - [incremental costmap updates](#costmap-updates) applied from Nav2's `costmap_updates` topics
+> - [`~/start` and `~/stop`](#runtime-control) `std_srvs/srv/Trigger` services in place of the custom control service, the CLI helper and the RViz control panel
+> - the node returning to idle once a session completes, so a plain start begins a new one
+> - [exploration status](#exploration-status) published as a `diagnostic_msgs/msg/DiagnosticStatus`
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -60,7 +69,6 @@ The package successfully completed explorations with up to 99.9% coverage across
 - [Flowchart Diagram](#flowchart-diagram)
 - [Demo Repository](#demo-repository)
 - [Installation and Build](#installation-and-build)
-- [Rviz Plugin](#rviz-plugin)
 - [Launch File Reference](#launch-file-reference)
 - [Greedy MRTSP vs Dynamic Programming](#greedy-mrtsp-vs-dynamic-programming)
 - [Benchmark](#benchmark)
@@ -148,7 +156,7 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 | `v1.0.0` | First release                                                                                                                                                                                                                                                                                                                          |
 | `v1.1.0` | Added [visible-reveal-gain preemption](#preemption-and-blocked-goal-design) to reduce path complexity and optimize traveled distance                                                                                                                                                                                                   |
 | `v1.2.0` | Added [smarter frontier ordering (MRTSP)](#mrtsp-cost-matrix), map optimization before search, and performance improvements                                                                                                                                                                                                            |
-| `v1.3.0` | Added [runtime control service](#runtime-control) and CLI, cold-idle support, and the optional [RViz control plugin](#rviz-plugin)                                                                                                                                                                                                     |
+| `v1.3.0` | Added runtime control service and CLI, cold-idle support, and the optional RViz control plugin (replaced in this fork, see [Runtime Control](#runtime-control))                                                                                                                                                                        |
 | `v1.4.0` | Added [demo repository](#demo-repository) and improved Nav2 stability                                                                                                                                                                                                                                                                  |
 | `v1.5.0` | Added [bounded-horizon DP ordering](#bounded-horizon-dp-ordering), bug fixes, and performance and stability improvements                                                                                                                                                                                                               |
 | `v1.6.0` | Added accurate distance calculation, grid based caching for map optimization, better distance and direction scoring for MRTSP, map processing refresh rate, better guarding for Nav2 failures. <br> Optimized preemption CPU usage. <br> Improved stability of the exploration and general performance. <br> Deprecated `nearest` mode |
@@ -286,18 +294,22 @@ Runtime and build dependencies include:
 - `rclcpp`
 - `nav2_msgs`
 - `nav_msgs`
+- `map_msgs`
 - `geometry_msgs`
 - `std_msgs`
+- `std_srvs`
+- `diagnostic_msgs`
 - `visualization_msgs`
 - `tf2`
 - `tf2_ros`
+- `generate_parameter_library`
 - `ament_cmake`
 
 ### Clone
 
 ```bash
-git clone https://github.com/mertgulerx/frontier-exploration-ros2.git
-cd frontier-exploration-ros2
+git clone https://github.com/OLO-Robotics/frontier_exploration_ros2.git
+cd frontier_exploration_ros2
 ```
 
 ### Install Dependencies
@@ -325,12 +337,14 @@ colcon build --packages-select frontier_exploration_ros2
 The packaged parameter file uses **MRTSP ordering** with **bounded-horizon DP**:
 
 ```yaml
-mrtsp_solver: dp
-dp_solver_candidate_limit: 15
-dp_planning_horizon: 10
+ordering:
+  solver: dp
+  dp:
+    candidate_limit: 12
+    planning_horizon: 8
 ```
 
-To use the higher performance but **lower accuracy** greedy method, set `mrtsp_solver: greedy`.
+To use the higher performance but **lower accuracy** greedy method, set `ordering.solver: greedy`.
 
 Launch with the packaged parameter file:
 
@@ -338,7 +352,7 @@ Launch with the packaged parameter file:
 ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py
 ```
 
-The packaged launch file uses the packaged `config/params.yaml` defaults, and that baseline starts exploration immediately with `autostart:=true`.
+The packaged launch file uses the packaged `config/params.yaml` defaults, and that baseline starts exploration immediately (`control.autostart: true`).
 
 Override the parameter file:
 
@@ -383,7 +397,7 @@ ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py \
   autostart:=false
 ```
 
-Disable the runtime control service while keeping automatic startup:
+Disable the runtime control services while keeping automatic startup:
 
 ```bash
 ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py \
@@ -393,41 +407,27 @@ ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py \
 
 ### Runtime Control
 
-When `control_service_enabled=true`, the node exposes a `control_exploration` service using `frontier_exploration_ros2/srv/ControlExploration`. This service provides an explicit runtime control surface for exploration lifecycle management. It is available even when exploration starts automatically, and is mainly useful for stop, delayed start/stop, cold-idle orchestration, and optional self-shutdown flows. If `autostart=false`, the node keeps this service enabled regardless of the configured `control_service_enabled` value so the cold-idle session can still be started.
+When `control.service_enabled` is `true`, the node exposes two `std_srvs/srv/Trigger` services in its private namespace:
 
-The packaged CLI helper provides a convenient terminal interface for that service:
+| Service                     | Effect                                                                                                                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/start`                   | Starts a session from idle: recreates the map and costmap subscriptions, resets session-local state, and explores once fresh input arrives. Succeeds without effect if already running. |
+| `~/stop`                    | Cancels any active goal, stops dispatching, and returns the node to idle so map and costmap traffic are no longer processed. Succeeds without effect if not running.                    |
+
+Both services stay available when exploration starts automatically. If `control.autostart` is `false`, they are enabled regardless of `control.service_enabled`, so an idle node can always be started.
 
 ```bash
-frontier_exploration_ctl start
-frontier_exploration_ctl start -t 10
-frontier_exploration_ctl stop
-frontier_exploration_ctl stop -t 10
-frontier_exploration_ctl stop -q
-frontier_exploration_ctl stop -t 10 -q
+ros2 service call /frontier_explorer/start std_srvs/srv/Trigger
+ros2 service call /frontier_explorer/stop std_srvs/srv/Trigger
 ```
 
-Command semantics:
+Under a namespace the services resolve to `/<namespace>/frontier_explorer/start` and `/<namespace>/frontier_explorer/stop`.
 
-- `start` enables exploration. If the node is in cold idle, it recreates the required subscriptions and timers, resets session-local exploration state, and begins exploration after fresh input data arrive.
-- `stop` disables exploration, prevents further goal dispatch, and returns the node to cold idle so that map and costmap traffic are no longer processed.
-- `-t <seconds>` schedules the request after the given delay instead of applying it immediately.
-- `stop -q` performs a normal stop sequence and then shuts down the explorer node process.
-
-If the control service is disabled while `autostart=true`, the CLI helper and RViz control panel cannot send runtime commands to that explorer instance.
-
-When the package is started with its own example launch file, `stop -q` also causes that launch session to exit after the explorer process stops. It does not attempt to terminate unrelated nodes, external launch parents, or arbitrary terminal sessions. Higher-level process orchestration remains outside the scope of this package.
+A session also ends on its own once no frontiers remain and any return to start has finished. The node then goes idle exactly as after `~/stop`, and a later `~/start` begins a new session.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
-## Rviz Plugin
-
-`frontier_exploration_ros2` also provides an optional RViz plugin for start and stop exploration control directly from RViz.
-
-<img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png" alt="RViz plugin for frontier_exploration_ros2" width="50%" />
-
-For details, inspect plugin's own [README.md](plugin/frontier_exploration_ros2_rviz/README.md).
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+## Rviz Plugin<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Greedy MRTSP vs Dynamic Programming
 
@@ -698,8 +698,8 @@ The package includes these main pieces:
 - `frontier_explorer`: public executable that subscribes to map and costmap topics, queries TF, and talks to Nav2 `NavigateToPose`.
 - `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, decision-map construction, MRTSP ordering, goal-state handling, settle logic, active-goal preemption, blocked-goal handling, and suppression orchestration.
 - `frontier_debug_observer`: passive RViz debug executable that observes map, costmap, TF, and parameters, then publishes analysis overlays without sending goals or changing exploration behavior.
-- `control_exploration`: optional typed ROS service used to start, stop, schedule, and optionally shut down the explorer process.
-- `frontier_exploration_ctl`: packaged CLI helper for sending exploration control requests from the terminal.
+- `~/start` and `~/stop`: optional `std_srvs/srv/Trigger` services that start and stop exploration sessions.
+- `exploration_status`: builds the diagnostics status entry from session and goal events.
 - `launch/frontier_explorer.launch.py`: package-owned example launch file.
 - `launch/frontier_debug.launch.py`: launch file for the passive debug observer.
 - `config/params.yaml`: packaged baseline parameter file.
@@ -713,7 +713,7 @@ At runtime, the node expects:
 - an occupancy map topic
 - a global costmap topic
 - a local costmap topic
-- a TF transform from `global_frame` to `robot_base_frame`
+- a TF transform from `frames.global` to `frames.robot_base`
 - a Nav2 `navigate_to_pose` action server, or another action server reachable under the configured action name
 
 The decision path is structured in stages:
@@ -726,12 +726,12 @@ The decision path is structured in stages:
 
 The package can also publish a completion event through `std_msgs/msg/Empty`. This is intentionally optional and transport-light. The explorer only reports completion. Any map export, mission chaining, docking, or higher-level orchestration should be implemented outside the package.
 
-The node also supports a cold-idle runtime mode. When the explorer is idle, it keeps the control service, action client, TF, and publishers available, but does not keep map or costmap subscriptions alive. This allows the package to remain available for orchestration while avoiding unnecessary map and costmap processing before exploration is started. In the packaged configuration, this mode is available when you explicitly set `autostart:=false` or stop the explorer at runtime. Cold-idle mode always keeps the control service enabled, even if `control_service_enabled=false` is requested.
+The node also supports a cold-idle runtime mode. When the explorer is idle, it keeps the control services, action client, TF, and publishers available, but does not keep map or costmap subscriptions alive. This allows the package to remain available for orchestration while avoiding unnecessary map and costmap processing before exploration is started. The node is idle when `control.autostart` is `false`, after `~/stop`, and after a session completes. Starting in cold idle always keeps the control services enabled, even if `control.service_enabled` is `false`.
 
 Two optional debug publishers are also available:
 
-- `selected_frontier_topic` publishes the selected target pose
-- `optimized_map_topic` publishes the optimized occupancy grid used for decision making
+- `topics.selected_frontier` publishes the selected target pose
+- `topics.optimized_map` publishes the optimized occupancy grid used for decision making
 
 These debug outputs are published only when debug logging is enabled for the node.
 
@@ -772,7 +772,7 @@ ros2 launch frontier_exploration_ros2 frontier_debug.launch.py \
 
 ### RViz Topic Setup
 
-Add the debug topics as `MarkerArray` displays, and add `explore/debug/decision_map` as a `Map` display. Keep the fixed frame aligned with the configured `global_frame`, usually `map`.
+Add the debug topics as `MarkerArray` displays, and add `explore/debug/decision_map` as a `Map` display. Keep the fixed frame aligned with the configured `frames.global`, usually `map`.
 
 The chunk-cache overlay uses these colors:
 
@@ -879,7 +879,7 @@ Topic:
 explore/debug/mrtsp_order
 ```
 
-This overlay shows the analyzed MRTSP route sequence. In `mrtsp_solver: greedy`, it follows the greedy matrix traversal. In `mrtsp_solver: dp`, it follows the bounded-horizon DP sequence after pruning.
+This overlay shows the analyzed MRTSP route sequence. In `ordering.solver: greedy`, it follows the greedy matrix traversal. In `ordering.solver: dp`, it follows the bounded-horizon DP sequence after pruning.
 
 Displayed values:
 
@@ -1037,8 +1037,8 @@ The occupancy grid is first mapped into a paper-style image:
 Let `I(p)` be the paper-image value at cell `p`. The bilateral filter uses a spatial-domain Gaussian and a range-domain Gaussian:
 
 ```text
-G_s(p, q) = exp(-||p - q||^2 / (2 * sigma_s^2))
-G_r(p, q) = exp(-(I(p) - I(q))^2 / (2 * sigma_r^2))
+G_s(p, q) = exp(-||p - q||^2 / (2 * map_optimization.sigma_s^2))
+G_r(p, q) = exp(-(I(p) - I(q))^2 / (2 * map_optimization.sigma_r^2))
 ```
 
 The normalization term and filtered value are:
@@ -1056,7 +1056,7 @@ After filtering, the package thresholds the image back into a frontier-decision 
 - cells below that threshold become unknown
 - occupied cells from the raw image remain occupied
 
-Finally, the package applies circular free-space dilation with radius `dilation_kernel_radius_cells` over the thresholded result. This expands filtered free support while keeping occupied cells fixed.
+Finally, the package applies circular free-space dilation with radius `map_optimization.dilation_kernel_radius_cells` over the thresholded result. This expands filtered free support while keeping occupied cells fixed.
 
 In practice, this stage:
 
@@ -1084,7 +1084,7 @@ Where:
 - `d_n` is the distance from the source frontier center point to the target frontier centroid
 - `d_u` is the distance from the target frontier center point to the target start world point
 - `d_v` is the distance from the target frontier centroid to the target start world point
-- `r_s` is `sensor_effective_range_m`
+- `r_s` is `ordering.sensor_effective_range_m`
 
 The implementation uses frontier cluster size as the gain term. The path-cost term can become negative when a candidate frontier is effectively already within sensing range. That behavior is intentional because it biases ordering toward frontiers that can expose area efficiently with less added travel.
 
@@ -1095,37 +1095,42 @@ Once frontier path cost and information gain are available, the package builds a
 For frontier-to-frontier transitions, the heuristic is:
 
 ```text
-M(i, j) = (weight_distance_wd * d(V_i, V_j)) / (weight_gain_ws * P(V_i, V_j))
+M(i, j) = (ordering.weight_distance * d(V_i, V_j)) / G(V_j)
+
+G(V_j) = P(V_i, V_j) ^ ordering.weight_gain
 ```
+
+where `P(V_i, V_j)` is the information gain of the target frontier, so `ordering.weight_gain` acts as an exponent on gain rather than a multiplier.
 
 For start-to-frontier transitions, the package adds a lower-bound start term derived from robot translation and heading limits:
 
 ```text
 M(0, j) =
-  (weight_distance_wd * d(V_0, V_j)) / (weight_gain_ws * P(V_0, V_j))
-  + t_lb(j)
+  (ordering.weight_distance * d(V_0, V_j)) / G(V_j)
+  + t_lb(j) / sqrt(G(V_j))
 ```
 
 With:
 
 ```text
-t_lb(j) = min(
-  L(robot, V_j) / max_linear_speed_vmax,
-  |delta_yaw(robot, V_j)| / max_angular_speed_wmax
-)
+t_lb(j) =
+  L(robot, V_j) / ordering.max_linear_speed
+  + |delta_yaw(robot, V_j)| / ordering.max_angular_speed
 ```
+
+`delta_yaw` is wrapped to the shorter turn direction.
 
 Matrix node `0` is the robot start node. Matrix nodes `1..M` are frontier candidates.
 
 Three implementation details matter in practice:
 
 - frontier dispatch uses `center_point` when no reachable navigation `goal_point` is materialized
-- `frontier_map_optimization_enabled` now directly controls whether decision-map optimization is applied
+- `map_optimization.enabled` now directly controls whether decision-map optimization is applied
 - reachable `goal_point` materialization stays active because dispatch, completion-distance, suppression, and visible-gain logic all use it
 
 ### Greedy MRTSP Ordering
 
-With `mrtsp_solver: greedy`, the package traverses the full MRTSP cost matrix one frontier at a time:
+With `ordering.solver: greedy`, the package traverses the full MRTSP cost matrix one frontier at a time:
 
 ```text
 current = robot_start
@@ -1142,7 +1147,7 @@ This mode is simple, deterministic, and fast. It only optimizes the next selecte
 
 ### Bounded-Horizon DP Ordering
 
-With `mrtsp_solver: dp`, the package applies **score-based pruning** before solving the route. The pruning score is the same **start-row MRTSP cost** used in the matrix:
+With `ordering.solver: dp`, the package applies **score-based pruning** before solving the route. The pruning score is the same **start-row MRTSP cost** used in the matrix:
 
 ```text
 score(j) = M(0, j)
@@ -1156,29 +1161,29 @@ Candidates are sorted by:
 3. lower original candidate index
 ```
 
-Only the first `dp_solver_candidate_limit` candidates are passed into the **DP solver**. The cost matrix is then built for that **pruned pool**, not for the full frontier list.
+Only the first `ordering.dp.candidate_limit` candidates are passed into the **DP solver**. The cost matrix is then built for that **pruned pool**, not for the full frontier list.
 
 The **DP horizon** controls **route depth**, not the candidate pool size:
 
 ```text
-candidate pool size = min(dp_solver_candidate_limit, number of candidates)
-route depth         = min(dp_planning_horizon, candidate pool size)
+candidate pool size = min(ordering.dp.candidate_limit, number of candidates)
+route depth         = min(ordering.dp.planning_horizon, candidate pool size)
 ```
 
 The default DP profile is:
 
 ```yaml
-dp_solver_candidate_limit: 15
-dp_planning_horizon: 10
+ordering.dp.candidate_limit: 15
+ordering.dp.planning_horizon: 10
 ```
 
 > [!WARNING]
-> Bounded-horizon DP cost depends on the **processor**, the frontier count, and how much CPU budget should be reserved for exploration. On lower-power CPUs, keep `dp_solver_candidate_limit` and `dp_planning_horizon` smaller, or use `mrtsp_solver: greedy` for the lightest behavior. On stronger CPUs, values above the default can be tested, but `dp_solver_candidate_limit` is capped at `60`.
+> Bounded-horizon DP cost depends on the **processor**, the frontier count, and how much CPU budget should be reserved for exploration. On lower-power CPUs, keep `ordering.dp.candidate_limit` and `ordering.dp.planning_horizon` smaller, or use `ordering.solver: greedy` for the lightest behavior. On stronger CPUs, values above the default can be tested, but `ordering.dp.candidate_limit` is capped at `60`.
 
-`dp_solver_candidate_limit` controls how many scored candidates enter the DP route search:
+`ordering.dp.candidate_limit` controls how many scored candidates enter the DP route search:
 
 ```text
-dp_solver_candidate_limit = 3
+ordering.dp.candidate_limit = 3
 
 score(A) = 1
 score(B) = 2
@@ -1188,7 +1193,7 @@ score(D) = 4
 candidate pool = A, B, C
 ```
 
-`dp_planning_horizon` controls how deep the route search goes inside that candidate pool:
+`ordering.dp.planning_horizon` controls how deep the route search goes inside that candidate pool:
 
 ```text
 K = 1
@@ -1274,7 +1279,7 @@ The package uses both global and local costmaps during search and during active-
 The blocking rule is intentionally strict:
 
 ```text
-blocked(world_point) is true if any active costmap reports cost > OCC_THRESHOLD
+blocked(world_point) is true if any active costmap reports cost >= frontier.occ_threshold
 ```
 
 This affects two stages:
@@ -1289,7 +1294,7 @@ This is one of the key extensions beyond a plain frontier-only implementation. I
 The implementation quantizes frontier reference points and goal points into a stable signature:
 
 ```text
-q = max(frontier_visit_tolerance, 0.1)
+q = max(frontier.visit_tolerance, 0.1)
 signature(F) = sort(round(ref_x / q), round(ref_y / q), round(goal_x / q), round(goal_y / q))
 ```
 
@@ -1304,13 +1309,13 @@ It reduces noise from small floating-point jitter and helps keep runtime behavio
 
 ### Post-Goal Settle Logic
 
-After a normal frontier goal result, the node does not immediately send the next goal when `post_goal_settle_enabled=true`. Instead it waits for a fixed cooldown.
+After a normal frontier goal result, the node does not immediately send the next goal when `post_goal_settle.enabled=true`. Instead it waits for a fixed cooldown.
 
 The readiness rule is:
 
 ```text
 ready if:
-  elapsed >= post_goal_min_settle
+  elapsed >= post_goal_settle.min_settle_s
 ```
 
 This reduces rapid re-goaling after a terminal frontier result without waiting for extra map-update counters or signature stability checks.
@@ -1319,14 +1324,14 @@ This reduces rapid re-goaling after a terminal frontier result without waiting f
 
 Two parameters are deliberately exposed as policy controls:
 
-- `goal_preemption_enabled`
-- `goal_skip_on_blocked_goal`
+- `preemption.enabled`
+- `preemption.skip_on_blocked_goal`
 
 They are design choices, not incidental flags.
 
-`goal_preemption_enabled` allows the active frontier goal to be reconsidered when target-pose visible reveal gain is exhausted.
+`preemption.enabled` allows the active frontier goal to be reconsidered when target-pose visible reveal gain is exhausted.
 
-`goal_skip_on_blocked_goal` allows the active frontier goal to be skipped when the target becomes blocked in the local or global costmap. If another frontier is available, the explorer moves on to it. If not, the blocked goal can be canceled explicitly.
+`preemption.skip_on_blocked_goal` allows the active frontier goal to be skipped when the target becomes blocked in the local or global costmap. If another frontier is available, the explorer moves on to it. If not, the blocked goal can be canceled explicitly.
 
 Visible-reveal-gain preemption evaluates the target pose with an occlusion-aware visible reveal estimate. As long as that estimate says the active goal still offers useful reveal on arrival, the current goal is kept. When that gain no longer justifies staying on the active target, the explorer can switch using the refreshed frontier set.
 
@@ -1338,7 +1343,7 @@ The implementation also applies:
 
 Together, these controls help the explorer stay responsive without turning preemption into unstable goal switching.
 
-`goal_preemption_complete_if_within_m` lets the system accept "close enough" as effectively complete and move on cleanly. This guard is independent from visible-reveal-gain preemption, so it can also recover when Nav2 does not report success even though the robot is already inside the configured frontier completion distance from the dispatched target pose. When the guard triggers, the active goal is canceled and the next normal scheduling pass uses the configured completion distance as a temporary minimum candidate distance near that completed target. This avoids immediate redispatch without doing an extra frontier-list filter in the arrival callback. It should still be used carefully on robots that prioritize conservative obstacle avoidance: if this threshold is set too large, the robot can mark a frontier complete before the intended sensing pose is meaningfully reached, which can in turn produce wrong exploration transitions.
+`preemption.complete_if_within_m` lets the system accept "close enough" as effectively complete and move on cleanly. This guard is independent from visible-reveal-gain preemption, so it can also recover when Nav2 does not report success even though the robot is already inside the configured frontier completion distance from the dispatched target pose. When the guard triggers, the active goal is canceled and the next normal scheduling pass uses the configured completion distance as a temporary minimum candidate distance near that completed target. This avoids immediate redispatch without doing an extra frontier-list filter in the arrival callback. It should still be used carefully on robots that prioritize conservative obstacle avoidance: if this threshold is set too large, the robot can mark a frontier complete before the intended sensing pose is meaningfully reached, which can in turn produce wrong exploration transitions.
 
 ### Frontier Suppression and Failure Memory
 
@@ -1349,7 +1354,7 @@ The implementation is reason-agnostic at the policy level. It does not try to in
 The attempt key is quantized with the same tolerance family used elsewhere in the core:
 
 ```text
-q = max(frontier_visit_tolerance, 0.1)
+q = max(frontier.visit_tolerance, 0.1)
 attempt_key(g) = (round(g_x / q), round(g_y / q))
 ```
 
@@ -1359,7 +1364,7 @@ After a configurable number of failed attempts, the implementation creates a squ
 
 ```text
 center = g
-side_length = frontier_suppression_base_size_m
+side_length = suppression.base_size_m
 ```
 
 If another matured failed goal lands in the outer expansion band of an existing region, the region grows instead of creating a second nearby fragment:
@@ -1375,7 +1380,7 @@ if g is in outer - inner:
 Where:
 
 - `C` is the current region side length
-- `B` is `frontier_suppression_expansion_size_m`
+- `B` is `suppression.expansion_size_m`
 
 Membership is evaluated with the selected goal point. The suppression policy does not use the centroid for region filtering.
 
@@ -1392,7 +1397,7 @@ That keeps the feature operationally safe for long-running deployments.
 
 Suppression also includes a no-progress watchdog for accepted frontier goals.
 
-The watchdog reads `distance_remaining` from the action feedback stream and tracks the best observed value. A goal is considered to have made meaningful progress only when the best distance improves by at least `frontier_suppression_progress_epsilon_m` since the last meaningful progress point.
+The watchdog reads `distance_remaining` from the action feedback stream and tracks the best observed value. A goal is considered to have made meaningful progress only when the best distance improves by at least `suppression.progress_epsilon_m` since the last meaningful progress point.
 
 The rule can be summarized as:
 
@@ -1408,16 +1413,16 @@ no_progress if:
   now - last_meaningful_progress_time >= no_progress_timeout
 ```
 
-There is no separate time window attached to `frontier_suppression_progress_epsilon_m`. The expected interpretation is:
+There is no separate time window attached to `suppression.progress_epsilon_m`. The expected interpretation is:
 
 - achieve at least that much meaningful improvement
-- before `frontier_suppression_no_progress_timeout_s` expires
+- before `suppression.no_progress_timeout_s` expires
 
 If that does not happen, the active frontier goal is canceled and counted as a failed attempt.
 
 ### Startup Grace Period
 
-Suppression is intentionally delayed during startup when `frontier_suppression_startup_grace_period_s` is greater than zero.
+Suppression is intentionally delayed during startup when `suppression.startup_grace_period_s` is greater than zero.
 
 During that grace period, suppression filtering, failed-attempt recording, and no-progress cancelation stay disabled. This helps avoid poisoning suppression memory while Nav2, TF, or costmaps are still stabilizing.
 
@@ -1427,12 +1432,12 @@ During that grace period, suppression filtering, failed-attempt recording, and n
 
 The first means frontier candidates still exist but are temporarily excluded by suppression. The second means frontier search found no candidates at all.
 
-When all current candidates are suppressed, `all_frontiers_suppressed_behavior` controls the response:
+When all current candidates are suppressed, `completion.all_suppressed_behavior` controls the response:
 
 - `stay`: wait in place for map or costmap changes
 - `return_to_start`: temporarily navigate back to the recorded start pose
 
-This temporary return behavior is separate from `return_to_start_on_complete`. It does not mark exploration complete, and it is canceled automatically if usable frontier candidates appear again.
+This temporary return behavior is separate from `completion.return_to_start`. It does not mark exploration complete, and it is canceled automatically if usable frontier candidates appear again.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -1442,31 +1447,34 @@ This temporary return behavior is separate from `return_to_start_on_complete`. I
 
 The node expects the following interfaces to exist in the running system:
 
-| Interface             | Default                  | Purpose                                                               |
-| --------------------- | ------------------------ | --------------------------------------------------------------------- |
-| Occupancy grid topic  | `map`                    | Frontier extraction and decision-map input                            |
-| Global costmap topic  | `global_costmap/costmap` | Reachability and blocked-goal filtering                               |
-| Local costmap topic   | `local_costmap/costmap`  | Near-field blocked-goal filtering                                     |
-| Nav2 action           | `navigate_to_pose`       | Goal execution                                                        |
-| TF transform          | `map -> base_footprint`  | Robot pose lookup                                                     |
-| Frontier marker topic | `explore/frontiers`      | Visualization                                                         |
-| Control service       | `control_exploration`    | Optional runtime start, stop, schedule, and quit control when enabled |
+| Interface               | Default                          | Purpose                                              |
+| ----------------------- | -------------------------------- | ---------------------------------------------------- |
+| Occupancy grid topic    | `map`                            | Frontier extraction and decision-map input           |
+| Global costmap topic    | `global_costmap/costmap`         | Reachability and blocked-goal filtering              |
+| Global costmap updates  | `global_costmap/costmap_updates` | Incremental global costmap changes                   |
+| Local costmap topic     | `local_costmap/costmap`          | Near-field blocked-goal filtering                    |
+| Local costmap updates   | `local_costmap/costmap_updates`  | Incremental local costmap changes                    |
+| Nav2 action             | `navigate_to_pose`               | Goal execution                                       |
+| TF transform            | `map -> base_footprint`          | Robot pose lookup                                    |
+| Frontier marker topic   | `explore/frontiers`              | Visualization                                        |
+| Status                  | `/diagnostics`                   | Exploration state, active goal and goal counts       |
+| Control services        | `~/start`, `~/stop`              | Optional runtime start and stop when enabled         |
 
 ### Topic and Frame Mapping
 
 For most integrations, only these fields need to be remapped:
 
-- `map_topic`
-- `costmap_topic`
-- `local_costmap_topic`
-- `navigate_to_pose_action_name`
-- `global_frame`
-- `robot_base_frame`
-- `frontier_marker_topic`
-- `selected_frontier_topic`
-- `optimized_map_topic`
+- `topics.map`
+- `topics.costmap` and `topics.costmap_updates`
+- `topics.local_costmap` and `topics.local_costmap_updates`
+- `actions.navigate_to_pose`
+- `frames.global`
+- `frames.robot_base`
+- `topics.frontier_markers`
+- `topics.selected_frontier`
+- `topics.optimized_map`
 
-All defaults are relative topic names inside the package-owned baseline config. That keeps the package namespace-friendly in multi-robot deployments. If your system uses absolute topic names, provide them explicitly in your parameter file.
+The declared defaults are relative topic names, which keeps the node namespace-friendly in multi-robot deployments. The packaged `config/params.yaml` sets absolute map and costmap topics for the single-robot TurtleBot3 setup, so provide your own parameter file for namespaced robots.
 
 ### Nav2 Integration
 
@@ -1479,13 +1487,13 @@ The explorer:
 - receives feedback and result callbacks
 - can request cancelation during preemption flows
 
-If your stack wraps Nav2 behind a namespace or a remapped action name, update `navigate_to_pose_action_name` accordingly.
+If your stack wraps Nav2 behind a namespace or a remapped action name, update `actions.navigate_to_pose` accordingly.
 
 If suppression is enabled, repeated rejected goals, aborted goals, or no-progress timeout cancelations can temporarily remove a frontier area from selection.
 
 ### Multi-Robot and Namespace Use
 
-The launch file accepts a `namespace` argument and all packaged topic defaults are relative. That makes the package suitable for:
+The launch file accepts a `namespace` argument and all declared topic defaults are relative. With a parameter file that keeps them relative, the package is suitable for:
 
 - one explorer per robot namespace
 - one Nav2 stack per robot namespace
@@ -1501,7 +1509,7 @@ ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py \
 
 ### Completion Event Consumption
 
-When `completion_event_enabled` is `true`, the explorer publishes one `std_msgs/msg/Empty` message when frontier exhaustion is observed.
+When `completion.event_enabled` is `true`, the explorer publishes one `std_msgs/msg/Empty` message per session when frontier exhaustion is observed.
 
 Completion event QoS:
 
@@ -1514,6 +1522,7 @@ Design intent:
 - the explorer reports completion
 - external systems decide what to do next
 - late-joining subscribers can still see the latest completion event while the explorer node remains alive
+- the [exploration status](#exploration-status) reports `complete` after the session has also finished any return to start
 
 Typical consumers include:
 
@@ -1522,7 +1531,46 @@ Typical consumers include:
 - mission sequencers
 - test automation scripts
 
-Suppressed return-to-start is different. If `all_frontiers_suppressed_behavior=return_to_start`, the robot may temporarily go back to the start pose while waiting for new frontier opportunities, but that does not publish a completion event and does not mean exploration has finished.
+Suppressed return-to-start is different. If `completion.all_suppressed_behavior=return_to_start`, the robot may temporarily go back to the start pose while waiting for new frontier opportunities, but that does not publish a completion event and does not mean exploration has finished.
+
+### Costmap Updates
+
+Nav2 publishes a full costmap only when its geometry changes, unless `always_send_full_costmap` is set, and sends incremental `map_msgs/msg/OccupancyGridUpdate` messages on `<costmap>_updates` otherwise. The explorer subscribes to `topics.costmap_updates` and `topics.local_costmap_updates` and patches its copy of each costmap, so it stays current without full republishing.
+
+Updates that arrive before a full costmap, or do not fit inside the current grid, are dropped until the next full costmap arrives. Set either topic to an empty string to rely on full costmap messages only.
+
+### Exploration Status
+
+When `diagnostics.enabled` is `true`, the node publishes a `diagnostic_msgs/msg/DiagnosticArray` on `diagnostics.topic` (default `/diagnostics`). It contains one status entry named `<fully qualified node name>: exploration`, for example `/robot1/frontier_explorer: exploration`, so robots in different namespaces can share the topic. State changes publish immediately, otherwise the entry is republished every `diagnostics.period_s`.
+
+The status `message` is the exploration state:
+
+| State                | Meaning                                                    |
+| -------------------- | ---------------------------------------------------------- |
+| `idle`               | Not exploring: autostart disabled or stopped via `~/stop`  |
+| `exploring`          | A session is running                                       |
+| `returning to start` | Frontiers are exhausted and the robot is driving back      |
+| `stopping`           | Waiting for a cancelled Nav2 goal to finish                |
+| `complete`           | The last session finished; cleared by the next `~/start`   |
+
+The `level` is `ERROR` or `WARN` for 10 seconds after the explorer logs an error or warning, and `OK` otherwise.
+
+The entry carries these key/value pairs; empty values mean "not applicable":
+
+| Key                  | Value                                                            |
+| -------------------- | ---------------------------------------------------------------- |
+| `state`              | Same as the status message                                       |
+| `goal_kind`          | `frontier`, `return_to_start` or `suppressed_return_to_start`    |
+| `goal_x`, `goal_y`   | Active goal position in `frames.global`, in meters               |
+| `goal_yaw`           | Active goal heading, in radians                                  |
+| `distance_remaining` | Latest Nav2 feedback for the active goal, in meters              |
+| `frontiers`          | Number of frontier goal points currently published as markers    |
+| `goals_dispatched`   | Goals sent to Nav2 this session                                  |
+| `goals_succeeded`    | Goals that succeeded                                             |
+| `goals_failed`       | Goals that were rejected or aborted                              |
+| `goals_canceled`     | Goals cancelled, typically by preemption                         |
+| `elapsed_s`          | Session duration, frozen at completion                           |
+| `last_problem`       | Most recent warning or error logged this session                 |
 
 ### Reusing the C++ Core Library
 
@@ -1583,7 +1631,7 @@ Accepted reliability values:
 | Local costmap    | `volatile`         | `inherit` from global costmap | `inherit` from global costmap |
 | Completion event | `transient_local`  | `reliable`                    | `1`                           |
 
-The local costmap subscriber always uses volatile durability. Reliability and depth can either inherit the global costmap settings or be overridden explicitly.
+The local costmap subscriber always uses volatile durability. Reliability and depth can either inherit the global costmap settings or be overridden explicitly. The costmap update subscribers use the same profile as their costmap.
 
 ### Startup-Only Map Durability Autodetect
 
@@ -1592,7 +1640,7 @@ If the correct map durability is not known during first integration, the package
 Behavior:
 
 1. Start with the configured map durability.
-2. Wait for `map_qos_autodetect_timeout_s`.
+2. Wait for `qos.map.autodetect_timeout_s`.
 3. If no map is received and the configured durability is `transient_local` or `volatile`, switch once to the opposite durability.
 4. If a map arrives, lock that choice and stop autodetect.
 5. If neither attempt succeeds, stop autodetect and report failure.
@@ -1639,18 +1687,19 @@ Launch file: `launch/frontier_explorer.launch.py`
 | `namespace`                     | `""`                          | Runs the node inside a ROS namespace                | No                |
 | `params_file`                   | packaged `config/params.yaml` | Selects the parameter file                          | Replaces the file |
 | `use_sim_time`                  | `false`                       | Passes standard ROS simulation time parameter       | Yes               |
-| `autostart`                     | `""`                          | Overrides the YAML `autostart` value when set       | Yes               |
-| `control_service_enabled`       | `""`                          | Overrides the YAML control-service setting when set | Yes               |
+| `autostart`                     | `""`                          | Overrides `control.autostart` when set              | Yes               |
+| `control_service_enabled`       | `""`                          | Overrides `control.service_enabled` when set        | Yes               |
 | `log_level`                     | `info`                        | Sets node log severity                              | No                |
-| `map_qos_durability`            | `transient_local`             | Overrides map durability                            | Yes               |
-| `map_qos_autodetect_on_startup` | `false`                       | Enables startup autodetect                          | Yes               |
-| `map_qos_autodetect_timeout_s`  | `2.0`                         | Sets timeout per autodetect attempt                 | Yes               |
-| `costmap_qos_reliability`       | `reliable`                    | Overrides global costmap reliability                | Yes               |
+| `map_qos_durability`            | `transient_local`             | Overrides `qos.map.durability`                      | Yes               |
+| `map_qos_autodetect_on_startup` | `false`                       | Overrides `qos.map.autodetect_on_startup`           | Yes               |
+| `map_qos_autodetect_timeout_s`  | `2.0`                         | Overrides `qos.map.autodetect_timeout_s`            | Yes               |
+| `costmap_qos_reliability`       | `reliable`                    | Overrides `qos.costmap.reliability`                 | Yes               |
 
 Notes:
 
 - `params_file` controls the full YAML source for the node.
-- the launch file only overrides `autostart`, `control_service_enabled`, the QoS-related parameters listed above, and `use_sim_time`
+- the launch file only overrides `control.autostart`, `control.service_enabled`, the QoS parameters listed above, and `use_sim_time`
+- the four QoS arguments always override the parameter file, even at their defaults
 - all other node behavior is defined by the selected parameter file
 - MRTSP solver selection, decision-map tuning, suppression behavior, startup grace, and suppressed-frontier waiting policy are configured in YAML, not through dedicated launch arguments
 
@@ -1658,115 +1707,139 @@ Notes:
 
 ## Parameter Reference
 
-Parameters are declared in `frontier_explorer_node.cpp`.
+Parameters are declared with `generate_parameter_library` in `src/frontier_explorer_parameters.yaml`, which is the authoritative list of names, types, defaults, descriptions and bounds. Parameters are grouped by prefix, so `ordering.dp.candidate_limit` is written in YAML as:
 
-The packaged launch path uses `config/params.yaml` as its baseline parameter file, so launched behavior may differ from the declared defaults where that YAML intentionally overrides them. Notable examples are `occ_threshold` and `goal_preemption_enabled`: the node declares `50` and `false`, while the packaged YAML sets `60` and `true`.
+```yaml
+frontier_explorer:
+  ros__parameters:
+    ordering:
+      dp:
+        candidate_limit: 12
+```
 
-### Topics and Frames
+All parameters are read-only and read once at startup. Values outside their bounds are rejected when the node starts, instead of being clamped.
 
-| Parameter                      | Type     | Default                     | Description                                                  | Notes                                                 |
-| ------------------------------ | -------- | --------------------------- | ------------------------------------------------------------ | ----------------------------------------------------- |
-| `map_topic`                    | `string` | `map`                       | Occupancy grid topic used for frontier extraction            | Relative by default for namespace-friendly deployment |
-| `costmap_topic`                | `string` | `global_costmap/costmap`    | Global costmap topic                                         | Used during search and blocked-goal checks            |
-| `local_costmap_topic`          | `string` | `local_costmap/costmap`     | Local costmap topic                                          | Used for near-field blocked-goal checks               |
-| `navigate_to_pose_action_name` | `string` | `navigate_to_pose`          | Action name used for navigation goals                        | Must resolve to a `NavigateToPose` action server      |
-| `global_frame`                 | `string` | `map`                       | Global frame used for goals and TF lookups                   | Must exist in TF                                      |
-| `robot_base_frame`             | `string` | `base_footprint`            | Robot body frame used for TF lookups                         | Must exist in TF                                      |
-| `frontier_marker_topic`        | `string` | `explore/frontiers`         | Marker topic for frontier visualization                      | Publishes frontier markers                            |
-| `selected_frontier_topic`      | `string` | `explore/selected_frontier` | Debug topic for the selected target pose                     | Published only when debug logging is enabled          |
-| `optimized_map_topic`          | `string` | `explore/optimized_map`     | Debug topic for the optimized occupancy grid used for search | Published only when debug logging is enabled          |
+The packaged launch path uses `config/params.yaml` as its baseline parameter file, so launched behavior differs from the declared defaults where that YAML overrides them. Notable examples are `frontier.occ_threshold` and `preemption.enabled`: the node declares `50` and `false`, while the packaged YAML sets `65` and `true`.
 
-### Visualization and Debug Outputs
+### Frames, Topics and Actions
 
-| Parameter                           | Type     | Default | Description                                                  | Notes                                                                                                                             |
-| ----------------------------------- | -------- | ------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `autostart`                         | `bool`   | `true`  | Starts exploration automatically when the node comes up      | Set `false` to keep the node in cold idle until a control request                                                                 |
-| `control_service_enabled`           | `bool`   | `true`  | Enables the `control_exploration` service                    | If `autostart=false`, the node keeps the service enabled even when this is set `false`; packaged configs override this to `false` |
-| `frontier_marker_scale`             | `double` | `0.15`  | Point marker size for frontier visualization                 | Used by the RViz marker publisher                                                                                                 |
-| `frontier_map_optimization_enabled` | `bool`   | `true`  | Enables decision-map optimization before frontier extraction | Applies directly to the MRTSP-only runtime                                                                                        |
+| Parameter                      | Type     | Default                          | Description                                                        |
+| ------------------------------ | -------- | -------------------------------- | ------------------------------------------------------------------ |
+| `frames.global`                | `string` | `map`                            | Global frame used for goals and TF lookups; must exist in TF       |
+| `frames.robot_base`            | `string` | `base_footprint`                 | Robot body frame used for TF lookups; must exist in TF             |
+| `topics.map`                   | `string` | `map`                            | Occupancy grid used for frontier extraction                        |
+| `topics.costmap`               | `string` | `global_costmap/costmap`         | Global costmap used during search and blocked-goal checks          |
+| `topics.costmap_updates`       | `string` | `global_costmap/costmap_updates` | Incremental global costmap updates; empty disables                 |
+| `topics.local_costmap`         | `string` | `local_costmap/costmap`          | Local costmap used for near-field blocked-goal checks              |
+| `topics.local_costmap_updates` | `string` | `local_costmap/costmap_updates`  | Incremental local costmap updates; empty disables                  |
+| `topics.frontier_markers`      | `string` | `explore/frontiers`              | Frontier goal point markers                                        |
+| `topics.selected_frontier`     | `string` | `explore/selected_frontier`      | Selected target pose, published only at debug log level            |
+| `topics.optimized_map`         | `string` | `explore/optimized_map`          | Optimized decision map, published only at debug log level          |
+| `topics.completion_event`      | `string` | `exploration_complete`           | Latched completion event, used when `completion.event_enabled`     |
+| `actions.navigate_to_pose`     | `string` | `navigate_to_pose`               | Must resolve to a `NavigateToPose` action server                   |
+
+### Control, Status and Visualization
+
+| Parameter                   | Type     | Default        | Description                                                                              |
+| --------------------------- | -------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `control.autostart`         | `bool`   | `true`         | Start exploring when the node comes up; `false` keeps it idle until `~/start`            |
+| `control.service_enabled`   | `bool`   | `true`         | Expose `~/start` and `~/stop`; forced on when `control.autostart` is `false`             |
+| `diagnostics.enabled`       | `bool`   | `true`         | Publish the [exploration status](#exploration-status) entry                               |
+| `diagnostics.topic`         | `string` | `/diagnostics` | `DiagnosticArray` topic for the status entry                                             |
+| `diagnostics.period_s`      | `double` | `1.0`          | Republish period; state changes publish immediately. Must be `> 0`                      |
+| `visualization.marker_scale`| `double` | `0.15`         | Point size of the frontier markers. Must be `> 0`                                       |
+| `map_processing.rate_hz`    | `double` | `1.0`          | Maximum map processing rate for decision-map refresh and frontier scheduling; `0` processes every map. On first launch the node samples map timing and caps the effective rate at the observed source rate. Must be `>= 0` |
 
 ### QoS
 
-| Parameter                       | Type     | Default           | Description                                    | Notes                                                    |
-| ------------------------------- | -------- | ----------------- | ---------------------------------------------- | -------------------------------------------------------- |
-| `map_qos_durability`            | `string` | `transient_local` | Map durability policy                          | Allowed: `transient_local`, `volatile`, `system_default` |
-| `map_qos_reliability`           | `string` | `reliable`        | Map reliability policy                         | Allowed: `reliable`, `best_effort`, `system_default`     |
-| `map_qos_depth`                 | `int`    | `1`               | Map subscription queue depth                   | Must be `>= 1`                                           |
-| `map_qos_autodetect_on_startup` | `bool`   | `false`           | Enables startup-only map durability autodetect | Switches at most once, then stops                        |
-| `map_qos_autodetect_timeout_s`  | `double` | `2.0`             | Timeout per autodetect attempt in seconds      | Internally clamped to at least `0.2`                     |
-| `costmap_qos_reliability`       | `string` | `reliable`        | Global costmap reliability policy              | Allowed: `reliable`, `best_effort`, `system_default`     |
-| `costmap_qos_depth`             | `int`    | `10`              | Global costmap queue depth                     | Must be `>= 1`                                           |
-| `local_costmap_qos_reliability` | `string` | `inherit`         | Local costmap reliability policy               | `inherit` copies the global costmap reliability          |
-| `local_costmap_qos_depth`       | `int`    | `-1`              | Local costmap queue depth                      | Negative values mean inherit from global costmap         |
+| Parameter                         | Type     | Default           | Description                                                                             |
+| --------------------------------- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
+| `qos.map.durability`              | `string` | `transient_local` | One of `transient_local`, `volatile`, `system_default`                                  |
+| `qos.map.reliability`             | `string` | `reliable`        | One of `reliable`, `best_effort`, `system_default`                                      |
+| `qos.map.depth`                   | `int`    | `1`               | Map subscription queue depth. Must be `>= 1`                                            |
+| `qos.map.autodetect_on_startup`   | `bool`   | `false`           | Enables startup-only map durability autodetect; switches at most once                   |
+| `qos.map.autodetect_timeout_s`    | `double` | `2.0`             | Timeout per autodetect attempt. Must be `>= 0.2`                                        |
+| `qos.costmap.reliability`         | `string` | `reliable`        | One of `reliable`, `best_effort`, `system_default`                                      |
+| `qos.costmap.depth`               | `int`    | `10`              | Global costmap queue depth. Must be `>= 1`                                              |
+| `qos.local_costmap.reliability`   | `string` | `inherit`         | `inherit` copies `qos.costmap.reliability`; otherwise as above                          |
+| `qos.local_costmap.depth`         | `int`    | `-1`              | Local costmap queue depth; negative inherits `qos.costmap.depth`                        |
 
-### Decision Map and MRTSP
+### Frontier Search and Map Optimization
 
-| Parameter                      | Type     | Default | Description                                                                | Notes                                                                       |
-| ------------------------------ | -------- | ------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `sigma_s`                      | `double` | `2.0`   | Spatial sigma used by the bilateral filter                                 | Larger values smooth over a wider map neighborhood                          |
-| `sigma_r`                      | `double` | `30.0`  | Range sigma used by the bilateral filter over paper-image intensity values | Controls how strongly occupancy-state differences preserve edges            |
-| `dilation_kernel_radius_cells` | `int`    | `1`     | Radius of the circular dilation applied after thresholding                 | Measured in map cells                                                       |
-| `sensor_effective_range_m`     | `double` | `1.5`   | Effective sensor range subtracted inside the MRTSP path-cost term          | Used only by the MRTSP ordering model                                       |
-| `weight_distance_wd`           | `double` | `1.0`   | Weight applied to the MRTSP path-cost term                                 | Larger values make path length dominate more strongly                       |
-| `weight_gain_ws`               | `double` | `1.0`   | Weight applied to the MRTSP information-gain term                          | Larger values make frontier size dominate more strongly                     |
-| `max_linear_speed_vmax`        | `double` | `0.5`   | Maximum linear speed used in the MRTSP start-node lower-bound term         | Used only while estimating the initial robot-to-frontier transition         |
-| `max_angular_speed_wmax`       | `double` | `1.0`   | Maximum angular speed used in the MRTSP start-node lower-bound term        | Used only while estimating the initial robot-to-frontier transition         |
-| `mrtsp_solver`                 | `string` | `dp`    | Solver used for frontier ordering                                          | Accepted values are `dp` and `greedy`; unknown values fall back to `greedy` |
-| `dp_solver_candidate_limit`    | `int`    | `15`    | Maximum scored frontier candidates passed into bounded-horizon DP          | Clamped to `1..60`; this is candidate pool size, not route depth            |
-| `dp_planning_horizon`          | `int`    | `10`    | Number of distinct frontier visits searched inside the candidate pool      | Clamped to at least `1`; this is route depth, not candidate count           |
-| `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                        |
-| `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects frontier candidate formation                                        |
+| Parameter                                | Type     | Default | Description                                                                                                                                         |
+| ---------------------------------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontier.occ_threshold`                 | `int`    | `50`    | Costmap cost at or above which a cell blocks a frontier or goal point. Must be `0..100`                                                             |
+| `frontier.min_size_cells`                | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction. Must be `>= 1`                                                              |
+| `frontier.candidate_min_goal_distance_m` | `double` | `0.0`   | Minimum robot-to-candidate distance during candidate construction. Must be `>= 0`                                                                   |
+| `frontier.selection_min_distance`        | `double` | `0.5`   | Preferred minimum robot-to-goal distance at dispatch; if the chosen point is too close, the closest free point that satisfies it is used instead    |
+| `frontier.visit_tolerance`               | `double` | `0.30`  | Tolerance for frontier equivalence and already-visited checks; also drives frontier signatures and suppression bucketing                            |
+| `map_optimization.enabled`               | `bool`   | `true`  | Filter and dilate the map into a decision map before frontier extraction                                                                            |
+| `map_optimization.sigma_s`               | `double` | `2.0`   | Bilateral filter spatial sigma, in cells. Must be `> 0`                                                                                             |
+| `map_optimization.sigma_r`               | `double` | `30.0`  | Bilateral filter range sigma, in occupancy intensity. Must be `> 0`                                                                                 |
+| `map_optimization.dilation_kernel_radius_cells` | `int` | `1` | Free-space dilation radius after filtering, in cells. Must be `>= 0`                                                                               |
 
-### Exploration Behavior
+### Ordering (MRTSP)
 
-| Parameter                                   | Type     | Default | Description                                                                                              | Notes                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------- | -------- | ------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontier_candidate_min_goal_distance_m`    | `double` | `0.0`   | Minimum robot-to-candidate distance applied during frontier candidate construction                       | Early search/materialization control used while building reachable dispatch goals; packaged configs override this to `0.5` or `0.8`                                                                                                                                                                                          |
-| `frontier_selection_min_distance`           | `double` | `0.5`   | Minimum robot-to-goal distance preferred during final dispatch generation                                | If the chosen dispatch point is too close, the code searches for the closest free replacement point that still satisfies this distance when possible                                                                                                                                                                         |
-| `escape_enabled`                            | `bool`   | `false` | Retries frontier search and dispatch without minimum-distance gates when the normal search finds nothing | Intended to break startup lockups when short LiDAR range or SLAM motion thresholds prevent enough initial map opening; packaged example configs enable it explicitly                                                                                                                                                         |
-| `frontier_visit_tolerance`                  | `double` | `0.30`  | Tolerance used for frontier equivalence and already-visited checks                                       | Also drives quantized frontier signatures and suppression attempt bucketing                                                                                                                                                                                                                                                  |
-| `goal_preemption_enabled`                   | `bool`   | `false` | Enables target-pose visible-reveal-gain-based frontier preemption while a frontier goal is active        | Packaged `config/params.yaml` overrides this to `true`, so the default launch path runs with preemption enabled                                                                                                                                                                                                              |
-| `goal_skip_on_blocked_goal`                 | `bool`   | `false` | Skips the active goal when it becomes blocked                                                            | Switches to another frontier when available; otherwise the blocked goal can be canceled                                                                                                                                                                                                                                      |
-| `goal_preemption_min_interval_s`            | `double` | `2.0`   | Minimum time between visible-reveal-gain preemption attempts                                             | Helps prevent unstable re-goaling; packaged configs override this to `1.0`                                                                                                                                                                                                                                                   |
-| `goal_preemption_complete_if_within_m`      | `double` | `0.0`   | Treat a near-arrived active frontier as complete                                                         | `0.0` disables this shortcut; works even when visible-reveal-gain preemption is disabled, cancels the active goal when the robot is close enough to the dispatched target, and temporarily raises candidate minimum distance near that completed goal to avoid immediate redispatch; packaged configs override this to `0.5` |
-| `goal_preemption_lidar_range_m`             | `double` | `12.0`  | LiDAR range used by the target-pose visible reveal estimate                                              | Sensor-model parameter for the map-based ray-cast                                                                                                                                                                                                                                                                            |
-| `goal_preemption_lidar_fov_deg`             | `double` | `360.0` | LiDAR field of view used by the target-pose visible reveal estimate                                      | Use values below `360` for directional sensors                                                                                                                                                                                                                                                                               |
-| `goal_preemption_lidar_ray_step_deg`        | `double` | `1.0`   | Angular sampling step used by the target-pose LiDAR ray-cast estimate                                    | Smaller steps cost more CPU but resolve narrow structure better                                                                                                                                                                                                                                                              |
-| `goal_preemption_lidar_min_reveal_length_m` | `double` | `0.5`   | Minimum visible reveal length required to keep the active goal in visible-reveal-gain mode               | Below this threshold, the active goal no longer qualifies to stay in visible-reveal-gain mode                                                                                                                                                                                                                                |
-| `goal_preemption_lidar_yaw_offset_deg`      | `double` | `0.0`   | Additional yaw offset applied to the target-pose LiDAR heading model                                     | Useful when the effective sensing direction differs from the goal heading model                                                                                                                                                                                                                                              |
-| `post_goal_settle_enabled`                  | `bool`   | `true`  | Enables a fixed post-goal cooldown before sending the next normal frontier goal                          | Immediate reselection/preemption replacements bypass this cooldown; packaged configs override this to `false`                                                                                                                                                                                                                |
-| `post_goal_min_settle`                      | `double` | `0.80`  | Minimum time to wait after a normal frontier goal result                                                 | Used only when `post_goal_settle_enabled=true`                                                                                                                                                                                                                                                                               |
-| `map_processing_rate_hz`                    | `double` | `1.0`   | Maximum `/map` processing rate for decision-map refresh and normal frontier scheduling                   | Set `<= 0.0` to process every map immediately; on first launch the node samples startup `/map` timing and caps the effective rate so it does not exceed the observed source rate; active-goal urgent preemption/completion checks can still react immediately without eagerly refreshing the decision map                    |
-| `return_to_start_on_complete`               | `bool`   | `true`  | Returns to the recorded start pose after frontier exhaustion                                             | Sends a regular navigation goal back to the saved start pose; packaged configs override this to `false`                                                                                                                                                                                                                      |
-| `all_frontiers_suppressed_behavior`         | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed                | Supported values: `stay`, `return_to_start`; other values are normalized to `stay`; packaged configs override this to `return_to_start`                                                                                                                                                                                      |
+| Parameter                           | Type     | Default | Description                                                                                             |
+| ----------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `ordering.solver`                   | `string` | `dp`    | `dp` (bounded-horizon dynamic programming) or `greedy`                                                  |
+| `ordering.dp.candidate_limit`       | `int`    | `15`    | Scored candidates passed into the DP solver; the candidate pool size, not route depth. Must be `1..60` |
+| `ordering.dp.planning_horizon`      | `int`    | `10`    | Distinct frontier visits searched inside the pool; the route depth. Must be `>= 1`                     |
+| `ordering.weight_distance`          | `double` | `1.0`   | Weight of the path-cost term. Must be `>= 0`                                                            |
+| `ordering.weight_gain`              | `double` | `1.0`   | Exponent applied to frontier information gain. Must be `>= 0`                                           |
+| `ordering.sensor_effective_range_m` | `double` | `1.5`   | Effective sensor range subtracted inside the path-cost term. Must be `>= 0`                             |
+| `ordering.max_linear_speed`         | `double` | `0.5`   | Linear speed used to estimate time to reach a frontier; does not command the robot. Must be `> 0`      |
+| `ordering.max_angular_speed`        | `double` | `1.0`   | Angular speed used to estimate time to face a frontier; does not command the robot. Must be `> 0`      |
+
+### Goal Behavior
+
+| Parameter                            | Type     | Default | Description                                                                                                                                                                                                |
+| ------------------------------------ | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preemption.enabled`                 | `bool`   | `false` | Replan when the active goal would reveal too little unknown space (visible-reveal-gain preemption)                                                                                                         |
+| `preemption.min_interval_s`          | `double` | `2.0`   | Minimum time between preemption checks                                                                                                                                                                     |
+| `preemption.complete_if_within_m`    | `double` | `0.0`   | Treat an active frontier goal as reached within this distance; `0` disables. Works without visible-reveal-gain preemption and briefly raises the candidate minimum distance near the completed goal         |
+| `preemption.skip_on_blocked_goal`    | `bool`   | `false` | Abandon the active goal when the costmaps show it blocked, switching to another frontier when available                                                                                                    |
+| `preemption.lidar.range_m`           | `double` | `12.0`  | Ray length of the map-based visibility model at the goal pose. Must be `>= 0.1`                                                                                                                             |
+| `preemption.lidar.fov_deg`           | `double` | `360.0` | Field of view of the visibility model; use less than `360` for directional sensors. Must be `1..360`                                                                                                        |
+| `preemption.lidar.ray_step_deg`      | `double` | `1.0`   | Angular step between visibility rays; smaller costs more CPU. Must be `0.25..45`                                                                                                                             |
+| `preemption.lidar.min_reveal_length_m` | `double` | `0.5` | Minimum revealable length that keeps the active goal. Must be `>= 0`                                                                                                                                       |
+| `preemption.lidar.yaw_offset_deg`    | `double` | `0.0`   | Heading offset of the visibility model relative to the goal yaw                                                                                                                                             |
+| `post_goal_settle.enabled`           | `bool`   | `true`  | Wait after each normal frontier goal result before dispatching the next; preemption replacements bypass it                                                                                                  |
+| `post_goal_settle.min_settle_s`      | `double` | `0.80`  | Settle time after a frontier goal result. Must be `>= 0`                                                                                                                                                    |
+| `escape.enabled`                     | `bool`   | `false` | Retry without minimum-distance gates until the first successful frontier goal, to break startup lockups with short-range sensors                                                                           |
+
+### Completion
+
+| Parameter                            | Type     | Default | Description                                                                                                  |
+| ------------------------------------ | -------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `completion.return_to_start`         | `bool`   | `true`  | Return to the session start pose once no frontiers remain                                                    |
+| `completion.all_suppressed_behavior` | `string` | `stay`  | What to do when every detected frontier is suppressed: `stay` or `return_to_start`                           |
+| `completion.event_enabled`           | `bool`   | `false` | Publish `topics.completion_event` once per session when frontiers are exhausted                              |
 
 ### Frontier Suppression
 
-| Parameter                                     | Type     | Default | Description                                                                  | Notes                                                                                                         |
-| --------------------------------------------- | -------- | ------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `frontier_suppression_enabled`                | `bool`   | `false` | Enables temporary frontier suppression                                       | When disabled, suppression state is not allocated                                                             |
-| `frontier_suppression_attempt_threshold`      | `int`    | `3`     | Failed attempts required before a frontier area is suppressed                | Applied to quantized goal-point attempt records; packaged configs override this to `1`                        |
-| `frontier_suppression_base_size_m`            | `double` | `1.0`   | Initial side length of a new square suppression region                       | Used when a matured failed attempt is first promoted into a region                                            |
-| `frontier_suppression_expansion_size_m`       | `double` | `0.5`   | Outer ring width used to detect nearby repeated failures and grow a region   | A matured failure in this band doubles the current square size                                                |
-| `frontier_suppression_timeout_s`              | `double` | `90.0`  | Lifetime of suppression records in seconds                                   | Shared TTL for both attempt records and active suppression regions                                            |
-| `frontier_suppression_no_progress_timeout_s`  | `double` | `20.0`  | Maximum allowed time without meaningful progress for an active frontier goal | If exceeded, the goal is canceled and counted as a failed attempt                                             |
-| `frontier_suppression_progress_epsilon_m`     | `double` | `0.05`  | Minimum `distance_remaining` improvement required to count as progress       | There is no separate epsilon time window; this improvement must happen before the no-progress timeout expires |
-| `frontier_suppression_startup_grace_period_s` | `double` | `15.0`  | Startup delay before suppression becomes active                              | During grace, suppression filtering, failed-attempt recording, and no-progress timeout are disabled           |
-| `frontier_suppression_max_attempt_records`    | `int`    | `256`   | Maximum number of live failed-attempt records kept in memory                 | Hard cap for bounded-memory attempt tracking                                                                  |
-| `frontier_suppression_max_regions`            | `int`    | `64`    | Maximum number of active suppression regions kept in memory                  | Hard cap for bounded-memory region tracking                                                                   |
+| Parameter                              | Type     | Default | Description                                                                                                  |
+| -------------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `suppression.enabled`                  | `bool`   | `false` | Temporarily suppress areas whose goals repeatedly fail or stall; no suppression state is allocated when off  |
+| `suppression.attempt_threshold`        | `int`    | `3`     | Failed attempts before an area is suppressed. Must be `>= 1`                                                 |
+| `suppression.base_size_m`              | `double` | `1.0`   | Side length of a new square suppression region. Must be `>= 0.1`                                             |
+| `suppression.expansion_size_m`         | `double` | `0.5`   | Ring around a region in which further failures double its size. Must be `>= 0`                              |
+| `suppression.timeout_s`                | `double` | `90.0`  | Lifetime of attempt records and suppression regions. Must be `>= 0.1`                                        |
+| `suppression.no_progress_timeout_s`    | `double` | `20.0`  | Time without progress before the active goal is cancelled and counted as failed. Must be `>= 0.1`            |
+| `suppression.progress_epsilon_m`       | `double` | `0.05`  | Reduction in `distance_remaining` that counts as progress. Must be `>= 0`                                    |
+| `suppression.startup_grace_period_s`   | `double` | `15.0`  | Delay after start before suppression, failure recording and no-progress timeouts activate. Must be `>= 0`    |
+| `suppression.max_attempt_records`      | `int`    | `256`   | Cap on live failed-attempt records. Must be `>= 1`                                                           |
+| `suppression.max_regions`              | `int`    | `64`    | Cap on active suppression regions. Must be `>= 1`                                                            |
 
-### Integration Hooks
-
-| Parameter                  | Type     | Default                | Description                         | Notes                                                                                                |
-| -------------------------- | -------- | ---------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `completion_event_enabled` | `bool`   | `false`                | Enables completion-event publishing | Publishes once per node lifetime after frontier exhaustion; packaged configs override this to `true` |
-| `completion_event_topic`   | `string` | `exploration_complete` | Topic used for the completion event | Must be non-empty if completion events are enabled                                                   |
+The debug observer reads the same explorer parameters plus its own `debug.*` group, declared in `src/debug/debug_observer_parameters.yaml`.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
+## TurtleBot3 Waffle Pi Example<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
 ## TurtleBot3 Waffle Pi Example
 
-The following example is a clean TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration. It enables **MRTSP ordering with bounded-horizon DP**, **decision-map optimization**, and **visible-reveal-gain-based active-goal preemption**.
+The following example is the packaged `config/params.yaml`, a TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration. It enables **MRTSP ordering with bounded-horizon DP**, **decision-map optimization**, and **visible-reveal-gain-based active-goal preemption**.
 
 ### Example Parameter File
 
@@ -1779,255 +1852,261 @@ The following example is a clean TurtleBot3 Waffle Pi exploration profile derive
 ```yaml
 frontier_explorer:
   ros__parameters:
-    # --------------- TOPICS --------------- #
 
-    # Occupancy grid topic used to compute frontiers.
-    map_topic: /map
+    # --------------- FRAMES, TOPICS, ACTIONS --------------- #
 
-    # Global costmap topic used to filter candidate frontiers.
-    costmap_topic: /global_costmap/costmap
+    frames:
+      # Global frame used for frontier goals and TF lookups.
+      global: map
+      # Robot base frame used for TF lookups.
+      robot_base: base_footprint
 
-    # Local costmap topic used to invalidate nearby blocked frontier goals.
-    local_costmap_topic: /local_costmap/costmap
+    topics:
+      # Occupancy grid topic used to compute frontiers.
+      map: /map
+      # Global costmap topic used to filter candidate frontiers.
+      costmap: /global_costmap/costmap
+      # Incremental global costmap updates. Empty relies on full costmap messages only,
+      # which Nav2 sends on geometry changes unless `always_send_full_costmap` is set.
+      costmap_updates: /global_costmap/costmap_updates
+      # Local costmap topic used to invalidate nearby blocked frontier goals.
+      local_costmap: /local_costmap/costmap
+      # Incremental local costmap updates. Empty relies on full costmap messages only.
+      local_costmap_updates: /local_costmap/costmap_updates
+      # MarkerArray topic used for frontier visualization in RViz.
+      frontier_markers: /explore/frontiers
+      # Selected frontier target, published only at debug log level.
+      selected_frontier: /explore/selected_frontier
+      # Optimized decision map, published only at debug log level.
+      optimized_map: /explore/optimized_map
+      # Requires `completion.event_enabled: true`.
+      completion_event: exploration_complete
 
-    # Nav2 NavigateToPose action name.
-    navigate_to_pose_action_name: navigate_to_pose
+    diagnostics:
+      # Publish exploration state (state, current goal, goal counts) as a DiagnosticStatus
+      # named "<node>: exploration". State changes publish immediately, otherwise every period.
+      enabled: true
+      topic: /diagnostics
+      period_s: 1.0
 
-    # Global frame used for frontier goals and TF lookups.
-    global_frame: map
+    actions:
+      # Nav2 NavigateToPose action name.
+      navigate_to_pose: navigate_to_pose
 
-    # Robot base frame used for TF lookups.
-    robot_base_frame: base_footprint
-
-    # MarkerArray topic used for frontier visualization in RViz.
-    frontier_marker_topic: /explore/frontiers
-
-    # Pose topic used to publish the currently selected frontier target for debugging.
-    selected_frontier_topic: /explore/selected_frontier
-
-    # OccupancyGrid topic used to publish the optimized decision map for debugging.
-    optimized_map_topic: /explore/optimized_map
-
-    # Requires `completion_event_enabled: true`
-    completion_event_topic: exploration_complete
-
-    # Marker size for frontier visualization.
-    frontier_marker_scale: 0.15
+    visualization:
+      # Marker size for frontier visualization.
+      marker_scale: 0.15
 
     # --------------- QoS --------------- #
 
-    # Map QoS profile selection.
-    map_qos_durability: transient_local
-    map_qos_reliability: reliable
-    map_qos_depth: 1
-
-    # Optional startup-only map durability autodetect helper.
-    map_qos_autodetect_on_startup: false
-    map_qos_autodetect_timeout_s: 5.0
-
-    # Costmap QoS profile selection (durability is fixed volatile in code).
-    costmap_qos_reliability: reliable
-    costmap_qos_depth: 10
-    local_costmap_qos_reliability: inherit
-    local_costmap_qos_depth: -1
+    qos:
+      map:
+        durability: transient_local
+        reliability: reliable
+        depth: 1
+        # Optional startup-only map durability autodetect helper.
+        autodetect_on_startup: false
+        autodetect_timeout_s: 5.0
+      # Costmap durability is fixed volatile in code.
+      costmap:
+        reliability: reliable
+        depth: 10
+      local_costmap:
+        reliability: inherit
+        depth: -1
 
     # --------------- GENERAL --------------- #
 
-    # Refresh Rate of the package.
-    # `1.0` is recommended. Use `2.0` if your robot is very fast.
-    # Use `0.50` if your mapping is slow and you want lowest CPU usage.
-    map_processing_rate_hz: 1.0
+    map_processing:
+      # Refresh rate of the package.
+      # `1.0` is recommended. Use `2.0` if your robot is very fast.
+      # Use `0.50` if your mapping is slow and you want lowest CPU usage.
+      rate_hz: 1.0
 
-    # Start exploration immediately at launch.
-    autostart: true
+    control:
+      # Start exploration immediately at launch.
+      autostart: true
+      # Keep the optional runtime control service available for manual stop/start flows.
+      service_enabled: false
 
-    # Keep the optional runtime control service available for manual stop/start flows.
-    control_service_enabled: false
+    completion:
+      # Publish a completion event so product-specific integrations can react outside the package.
+      event_enabled: true
+      # Return to the recorded start pose once no frontiers remain.
+      return_to_start: false
+      # Behavior when frontiers exist but all of them are temporarily suppressed: stay or return_to_start.
+      # Requires `suppression.enabled: true`.
+      all_suppressed_behavior: return_to_start
 
-    # Publish a completion event so product-specific integrations can react outside the package.
-    completion_event_enabled: true
+    escape:
+      # Allow a farther frontier fallback until the first successful frontier.
+      # Useful if you have a very low range LiDAR or Depth sensor.
+      enabled: true
 
-    # Allow a farther frontier fallback until the first successful frontier.
-    # Useful if you have a very low range LiDAR or Depth sensor.
-    escape_enabled: true
+    post_goal_settle:
+      # Enable the post-goal settle delay after a successful frontier goal.
+      # Useful if you want stability over speed. Use if you have slow SLAM & LiDAR configuration.
+      enabled: false
+      # Minimum seconds to wait before selecting the next frontier after a successful goal.
+      min_settle_s: 1.50
 
-    # Return to the recorded start pose once no frontiers remain.
-    return_to_start_on_complete: false
+    # --------------- ORDERING (MRTSP) --------------- #
 
-    # "dp" optimizes traveling distance by comparing posibilities with limited depth. Increasing efficiency but adds extra CPU overhead.
-    # "greedy" traverses the full MRTSP matrix one step at a time. Cost free.
-    mrtsp_solver: dp
-    # Maximum number of scored frontier candidates passed into the bounded-horizon dp solver.
-    dp_solver_candidate_limit: 12
-    # Number of distinct frontier visits evaluated in the candidate pool.
-    dp_planning_horizon: 8
+    ordering:
+      # "dp" optimizes traveling distance by comparing possibilities with limited depth.
+      # Increases efficiency but adds extra CPU overhead.
+      # "greedy" traverses the full MRTSP matrix one step at a time. Cost free.
+      solver: dp
+      dp:
+        # Maximum number of scored frontier candidates passed into the bounded-horizon dp solver.
+        candidate_limit: 12
+        # Number of distinct frontier visits evaluated in the candidate pool.
+        planning_horizon: 8
 
-    # Enable decision-map preprocessing for frontier extraction.
-    # Disable only if you are having performance issues. Not a problem for most CPUs.
-    frontier_map_optimization_enabled: true
+      # Weight applied to the path-cost term in the frontier cost matrix.
+      # Increasing this makes the explorer more distance-sensitive and conservative.
+      # Decreasing it makes information gain dominate more often.
+      # Example: 2.0 prefers closer frontiers, 0.5 allows farther high-gain picks.
+      weight_distance: 1.0
 
-    # Replan while navigating if target-pose visible reveal gain for active goal is exhausted.
-    # Disable if you are having performance issues.
-    goal_preemption_enabled:
-      true
+      # Exponent applied to frontier information gain.
+      # Larger values favor large frontier clusters that promise more map expansion.
+      # Smaller values make the robot clean up nearby small frontiers first.
+      # Example: 2.0 may skip small room corners, 0.5 tends to clear them sooner.
+      weight_gain: 1.0
+
+      # Max linear speed used only in the lower-bound time term.
+      # It does not command the robot directly; it estimates how fast a frontier
+      # can be reached when building the first row of the cost matrix.
+      # Larger values reduce the time penalty of distant frontiers.
+      max_linear_speed: 0.50
+
+      # Max angular speed used in the heading-change part of time lower bound.
+      # This matters most when candidate frontiers require large initial turns.
+      # Larger values reduce the penalty of reorientation-heavy options.
+      # Example: low values prefer frontiers already near the current heading.
+      max_angular_speed: 1.0
+
+      # Effective sensor range subtracted inside the paper's path-cost term.
+      # Larger values reduce the effective traversal penalty between frontiers.
+      # This favors frontiers that can reveal more space from farther away.
+      # Example: 0.5 makes costs distance-heavy, 2.0 rewards sensing reach more.
+      # Doesn't have to be a real sensor value. Used for distance scoring.
+      sensor_effective_range_m: 1.5
+
+    # --------------- FRONTIERS --------------- #
+
+    frontier:
+      # Minimum distance before a frontier is considered a valid target.
+      # Used for dispatch not filtering.
+      # Recommended value: 2.5x size of robot's radius
+      selection_min_distance: 0.8
+
+      # Distance used to treat a frontier region as recently visited.
+      # Use if you are having navigation loops.
+      visit_tolerance: 0.40
+
+      # Minimum allowed distance from robot to consider a frontier point as valid.
+      # This prevents selecting trivially close frontiers that do not move exploration.
+      # Higher values reduce local dithering but can skip useful nearby openings.
+      # Example: 0.25 allows immediate local cleanup, 0.5 forces a small commit distance.
+      # Recommended value: 2.5x size of robot's radius
+      candidate_min_goal_distance_m: 0.8
+
+      # Occupancy threshold applied to the global costmap during frontier validation.
+      # Neighbor cells at or above this cost are treated as blocked for frontier tests.
+      # Lower values make the explorer avoid inflated-cost regions more aggressively.
+      # Higher values allow frontiers closer to obstacles and inflation bands.
+      # Value between 0-100. Use higher values if exploration skips very small areas.
+      occ_threshold: 65
+
+      # Minimum connected frontier size accepted by WFD, measured in cells.
+      # This removes tiny fragments caused by noise or partial unknown boundaries.
+      # Lower values increase responsiveness but can create jittery micro-goals.
+      # Higher values stabilize behavior but may ignore narrow real openings.
+      min_size_cells: 5
+
+    # --------------- MAP OPTIMIZATION --------------- #
+
+    map_optimization:
+      # Enable decision-map preprocessing for frontier extraction.
+      # Disable only if you are having performance issues. Not a problem for most CPUs.
+      enabled: true
+
+      # Spatial sigma of the bilateral filter in map cells.
+      # Larger values smooth over wider neighborhoods before frontier extraction.
+      # Too low preserves noise; too high can merge narrow openings unrealistically.
+      # Example: 1.0 keeps details sharp, 3.0 makes corridors look cleaner but broader.
+      sigma_s: 2.0
+
+      # Range sigma of the bilateral filter in occupancy-image intensity space.
+      # Larger values let dissimilar neighboring cells influence each other more.
+      # Small values preserve occupancy edges; large values can blur free/unknown borders.
+      # Example: 10.0 is edge-preserving, 50.0 is much more permissive.
+      sigma_r: 30.0
+
+      # Free-space dilation radius after bilateral filtering, measured in cells.
+      # This expands filtered free regions before running WFD on the optimized map.
+      # Higher values help bridge tiny gaps, but can also over-open door thresholds.
+      # Example: 0 keeps the map literal, 2 can merge thin fragmented frontiers.
+      dilation_kernel_radius_cells: 1
+
+    # --------------- PREEMPTION --------------- #
+
+    preemption:
+      # Replan while navigating if target-pose visible reveal gain for active goal is exhausted.
+      # Disable if you are having performance issues.
+      enabled: true
 
       # Minimum seconds between consecutive goal preemption attempts.
-    # Also effects performance.
-    goal_preemption_min_interval_s: 2.0
+      # Also affects performance.
+      min_interval_s: 2.0
 
-    # Skip the active frontier goal if it becomes blocked.
-    goal_skip_on_blocked_goal: true
+      # Skip the active frontier goal if it becomes blocked.
+      skip_on_blocked_goal: true
 
-    # Enable the post-goal settle delay after a successful frontier goal.
-    # Useful if you want stability over speed. Use if you have slow SLAM & LiDAR configuration.
-    post_goal_settle_enabled: false
+      # Treat the current frontier as complete once the robot is this close to it; 0.0 disables this shortcut.
+      # This close-enough guard also works when visible-gain preemption is disabled, but obstacle-avoidance-heavy
+      # robots should use it carefully because large values can end a frontier too early and trigger wrong
+      # exploration choices.
+      complete_if_within_m: 0.50
 
-    # Minimum seconds to wait before selecting the next frontier after a successful goal.
-    post_goal_min_settle: 1.50
+      lidar:
+        # LiDAR range in meters used by the map-based visible reveal gate.
+        range_m: 12.0
+        # LiDAR field of view in degrees used by the visible reveal gate.
+        fov_deg: 360.0
+        # Angular spacing in degrees between LiDAR ray-cast samples for visible reveal estimation.
+        ray_step_deg: 1.0
+        # Minimum visible reveal length in meters required to keep the current goal instead of preempting.
+        min_reveal_length_m: 0.5
+        # Additional yaw offset in degrees applied to the target-pose LiDAR heading model.
+        yaw_offset_deg: 0.0
 
-    # Enable temporary suppression for frontiers that repeatedly fail or stall.
-    # Use if you are having issues with SLAM or Nav2.
-    frontier_suppression_enabled: false
+    # --------------- SUPPRESSION --------------- #
 
-    # Behavior when frontiers exist but all of them are temporarily suppressed: stay or return_to_start.
-    # Requires `frontier_suppression_enabled: true`
-    all_frontiers_suppressed_behavior: return_to_start
-
-    # --------------- Algorithm Configuration - Advanced Users --------------- #
-
-    # --------------- MRTSP Scoring --------------- #
-
-    # Weight applied to the path-cost term in the frontier cost matrix.
-    # Increasing this makes the explorer more distance-sensitive and conservative.
-    # Decreasing it makes information gain dominate more often.
-    # Example: 2.0 prefers closer frontiers, 0.5 allows farther high-gain picks.
-    weight_distance_wd: 1.0
-
-    # Weight applied to the frontier information-gain term.
-    # Larger values favor large frontier clusters that promise more map expansion.
-    # Smaller values make the robot clean up nearby small frontiers first.
-    # Example: 2.0 may skip small room corners, 0.5 tends to clear them sooner.
-    weight_gain_ws: 1.0
-
-    # Max linear speed used only in the lower-bound time term.
-    # It does not command the robot directly; it estimates how fast a frontier
-    # can be reached when building the first row of the cost matrix.
-    # Larger values reduce the time penalty of distant frontiers.
-    max_linear_speed_vmax: 0.50
-
-    # Max angular speed used in the heading-change part of time lower bound.
-    # This matters most when candidate frontiers require large initial turns.
-    # Larger values reduce the penalty of reorientation-heavy options.
-    # Example: low values prefer frontiers already near the current heading.
-    max_angular_speed_wmax: 1.0
-
-    # Effective sensor range subtracted inside the paper's path-cost term.
-    # Larger values reduce the effective traversal penalty between frontiers.
-    # This favors frontiers that can reveal more space from farther away.
-    # Example: 0.5 makes costs distance-heavy, 2.0 rewards sensing reach more.
-    # Doesn't have to be a real sensor value. Used for distance scoring.
-    sensor_effective_range_m: 1.5
-
-    # --------------- Navigation Safety --------------- #
-
-    # Minimum distance before a frontier is considered a valid target.
-    # Used for dispatch not filterization.
-    # Recommended value: 2.5x size of robot's radius
-    frontier_selection_min_distance: 0.8
-
-    # Distance used to treat a frontier region as recently visited.
-    # Use if you are having navigation loops.
-    frontier_visit_tolerance: 0.40
-
-    # --------------- Map Optimization --------------- #
-
-    # Minimum allowed distance from robot to a consider a frontier point as valid.
-    # This prevents selecting trivially close frontiers that do not move exploration.
-    # Higher values reduce local dithering but can skip useful nearby openings.
-    # Example: 0.25 allows immediate local cleanup, 0.5 forces a small commit distance.
-    # Recommended value: 2.5x size of robot's radius
-    frontier_candidate_min_goal_distance_m: 0.8
-
-    # Occupancy threshold applied to the global costmap during frontier validation.
-    # Neighbor cells at or above this cost are treated as blocked for frontier tests.
-    # Lower values make the explorer avoid inflated-cost regions more aggressively.
-    # Higher values allow frontiers closer to obstacles and inflation bands.
-    # Value between 0-100. Use higher values if exploration skips very small areas.
-    occ_threshold: 65
-
-    # Minimum connected frontier size accepted by WFD, measured in cells.
-    # This removes tiny fragments caused by noise or partial unknown boundaries.
-    # Lower values increase responsiveness but can create jittery micro-goals.
-    # Higher values stabilize behavior but may ignore narrow real openings.
-    min_frontier_size_cells: 5
-
-    # Spatial sigma of the bilateral filter in map cells.
-    # Larger values smooth over wider neighborhoods before frontier extraction.
-    # Too low preserves noise; too high can merge narrow openings unrealistically.
-    # Example: 1.0 keeps details sharp, 3.0 makes corridors look cleaner but broader.
-    sigma_s: 2.0
-
-    # Range sigma of the bilateral filter in occupancy-image intensity space.
-    # Larger values let dissimilar neighboring cells influence each other more.
-    # Small values preserve occupancy edges; large values can blur free/unknown borders.
-    # Example: 10.0 is edge-preserving, 50.0 is much more permissive.
-    sigma_r: 30.0
-
-    # Free-space dilation radius after bilateral filtering, measured in cells.
-    # This expands filtered free regions before running WFD on the optimized map.
-    # Higher values help bridge tiny gaps, but can also over-open door thresholds.
-    # Example: 0 keeps the map literal, 2 can merge thin fragmented frontiers.
-    dilation_kernel_radius_cells: 1
-
-    # --------------- Preemption --------------- #
-
-    # Treat the current frontier as complete once the robot is this close to it; 0.0 disables this shortcut.
-    # This close-enough guard also works when visible-gain preemption is disabled, but obstacle-avoidance-heavy robots should use it carefully because large values can end a frontier too early and trigger wrong exploration choices.
-    goal_preemption_complete_if_within_m: 0.50
-
-    # LiDAR range in meters used by the map-based visible reveal gate above.
-    goal_preemption_lidar_range_m: 12.0
-
-    # LiDAR field of view in degrees used by the visible reveal gate above.
-    goal_preemption_lidar_fov_deg: 360.0
-
-    # Angular spacing in degrees between LiDAR ray-cast samples for visible reveal estimation above.
-    goal_preemption_lidar_ray_step_deg: 1.0
-
-    # Minimum visible reveal length in meters required to keep the current goal instead of preempting.
-    goal_preemption_lidar_min_reveal_length_m: 0.5
-
-    # Additional yaw offset in degrees applied to the target-pose LiDAR heading model above.
-    goal_preemption_lidar_yaw_offset_deg: 0.0
-
-    # --------------- Suppression --------------- #
-
-    # Number of failed attempts before a frontier area is temporarily suppressed.
-    frontier_suppression_attempt_threshold: 2
-
-    # Initial side length in meters for a newly suppressed square area.
-    frontier_suppression_base_size_m: 1.0
-
-    # Additional outer ring width in meters used to detect nearby repeated failures and expand suppression.
-    frontier_suppression_expansion_size_m: 0.5
-
-    # Suppression entry lifetime in seconds before old regions and attempts are removed.
-    frontier_suppression_timeout_s: 90.0
-
-    # Maximum allowed time in seconds without meaningful progress before a frontier goal is canceled.
-    frontier_suppression_no_progress_timeout_s: 20.0
-
-    # Minimum distance_remaining improvement in meters required to count as progress.
-    frontier_suppression_progress_epsilon_m: 0.25
-
-    # Delay suppression activation during startup so late navigation bring-up does not poison frontier memory.
-    frontier_suppression_startup_grace_period_s: 15.0
-
-    # Maximum number of tracked failed frontier attempt records kept in memory.
-    frontier_suppression_max_attempt_records: 256
-
-    # Maximum number of active suppressed regions kept in memory.
-    frontier_suppression_max_regions: 64
+    suppression:
+      # Enable temporary suppression for frontiers that repeatedly fail or stall.
+      # Use if you are having issues with SLAM or Nav2.
+      enabled: false
+      # Number of failed attempts before a frontier area is temporarily suppressed.
+      attempt_threshold: 2
+      # Initial side length in meters for a newly suppressed square area.
+      base_size_m: 1.0
+      # Additional outer ring width in meters used to detect nearby repeated failures and expand suppression.
+      expansion_size_m: 0.5
+      # Suppression entry lifetime in seconds before old regions and attempts are removed.
+      timeout_s: 90.0
+      # Maximum allowed time in seconds without meaningful progress before a frontier goal is canceled.
+      no_progress_timeout_s: 20.0
+      # Minimum distance_remaining improvement in meters required to count as progress.
+      progress_epsilon_m: 0.25
+      # Delay suppression activation during startup so late navigation bring-up does not poison frontier memory.
+      startup_grace_period_s: 15.0
+      # Maximum number of tracked failed frontier attempt records kept in memory.
+      max_attempt_records: 256
+      # Maximum number of active suppressed regions kept in memory.
+      max_regions: 64
 ```
 
 ### Example Launch
@@ -2054,12 +2133,14 @@ ros2 launch frontier_exploration_ros2 frontier_explorer.launch.py \
 - `/map` is available and uses the expected QoS profile
 - `/global_costmap/costmap` is available
 - `/local_costmap/costmap` is available
+- `/global_costmap/costmap_updates` and `/local_costmap/costmap_updates` are published
 - `map -> base_footprint` exists in TF
 - `navigate_to_pose` is reachable
 - the LiDAR scan quality is stable enough for SLAM, decision-map optimization, and costmap updates
 - the robot can receive and complete Nav2 goals before exploration is started
 - if you use debug inspection, the selected frontier and optimized map topics are visible while debug logging is enabled
 - the completion event topic is subscribed by an external consumer if post-processing is needed
+- `/diagnostics` shows `/frontier_explorer: exploration` moving to `exploring`
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -2069,7 +2150,7 @@ Run package tests with:
 
 ```bash
 cd <your_workspace>
-source /opt/ros/<your_ros2_distro/setup.bash
+source /opt/ros/<your_ros2_distro>/setup.bash
 colcon test --packages-select frontier_exploration_ros2
 colcon test-result --verbose
 ```
@@ -2081,9 +2162,11 @@ Current test coverage includes:
 - deterministic frontier results
 - marker publish deduplication
 - preemption and cancelation flow
-- runtime control service behavior
+- runtime start and stop services
 - cold-idle subscription gating
-- CLI parsing for delayed start, stop, and stop quit
+- return to idle after a completed session, with and without return to start
+- incremental costmap update patching
+- exploration status reporting through diagnostics
 - frontier suppression, no-progress timeout, startup grace, and temporary return-to-start behavior
 - QoS parsing and startup autodetect behavior
 - decision-map optimization math
