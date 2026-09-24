@@ -11,6 +11,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(generate_parameter_library REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -24,6 +25,13 @@ find_package(visualization_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ControlExploration.srv"
+)
+
+generate_parameter_library(frontier_explorer_parameters
+  src/frontier_explorer_parameters.yaml
+)
+generate_parameter_library(frontier_debug_observer_parameters
+  src/debug/debug_observer_parameters.yaml
 )
 
 add_library(${PROJECT_NAME}_core
@@ -60,6 +68,9 @@ target_include_directories(${PROJECT_NAME}_node PUBLIC
 target_compile_features(${PROJECT_NAME}_node PUBLIC cxx_std_17)
 target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}_core
+)
+target_link_libraries(${PROJECT_NAME}_node
+  frontier_explorer_parameters
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(${PROJECT_NAME}_node
@@ -112,6 +123,8 @@ add_executable(frontier_debug_observer
 target_compile_features(frontier_debug_observer PUBLIC cxx_std_17)
 target_link_libraries(frontier_debug_observer
   ${PROJECT_NAME}_core
+  frontier_explorer_parameters
+  frontier_debug_observer_parameters
 )
 ament_target_dependencies(frontier_debug_observer
   geometry_msgs
@@ -139,6 +152,7 @@ install(
   TARGETS
     ${PROJECT_NAME}_core
     ${PROJECT_NAME}_node
+    frontier_explorer_parameters
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

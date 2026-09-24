@@ -11,6 +11,7 @@
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>action_msgs</depend>
+  <depend>generate_parameter_library</depend>
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>nav_msgs</depend>

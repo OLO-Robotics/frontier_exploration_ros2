@@ -11,6 +11,19 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _flatten(params: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    # Nested parameter groups merge per leaf, so a debug section overriding one
+    # value in a group keeps the explorer's other values in that group.
+    flat = {}
+    for key, value in params.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten(value, f"{name}."))
+        else:
+            flat[name] = value
+    return flat
+
+
 def _load_shared_params(params_path: str) -> dict[str, Any]:
     path = Path(params_path).expanduser()
     if not path.exists():
@@ -24,17 +37,10 @@ def _load_shared_params(params_path: str) -> dict[str, Any]:
     # This lets the observer mirror the explorer while still allowing RViz-only
     # debug settings to live in the same YAML file.
     shared = {}
-    wildcard_params = data.get("/**", {}).get("ros__parameters", {})
-    if isinstance(wildcard_params, dict):
-        shared.update(wildcard_params)
-
-    frontier_params = data.get("frontier_explorer", {}).get("ros__parameters", {})
-    if isinstance(frontier_params, dict):
-        shared.update(frontier_params)
-
-    debug_params = data.get("frontier_debug_observer", {}).get("ros__parameters", {})
-    if isinstance(debug_params, dict):
-        shared.update(debug_params)
+    for section in ("/**", "frontier_explorer", "frontier_debug_observer"):
+        params = data.get(section, {}).get("ros__parameters", {})
+        if isinstance(params, dict):
+            shared.update(_flatten(params))
 
     return shared
 
@@ -51,10 +57,10 @@ def _create_debug_actions(context):
     debug_params.update(
         {
             "use_sim_time": use_sim_time,
-            "debug_update_rate_hz": LaunchConfiguration("debug_update_rate_hz"),
-            "debug_labels_enabled": LaunchConfiguration("debug_labels_enabled"),
-            "debug_label_top_n": LaunchConfiguration("debug_label_top_n"),
-            "debug_edge_top_n": LaunchConfiguration("debug_edge_top_n"),
+            "debug.update_rate_hz": LaunchConfiguration("debug_update_rate_hz"),
+            "debug.labels_enabled": LaunchConfiguration("debug_labels_enabled"),
+            "debug.label_top_n": LaunchConfiguration("debug_label_top_n"),
+            "debug.edge_top_n": LaunchConfiguration("debug_edge_top_n"),
         }
     )
 

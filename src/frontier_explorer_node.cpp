@@ -16,6 +16,7 @@ limitations under the License.
 
 #include "frontier_exploration_ros2/frontier_explorer_node.hpp"
 #include "frontier_exploration_ros2/nav2_compat.hpp"
+#include "frontier_explorer_parameters.hpp"
 
 #include <action_msgs/msg/goal_status.hpp>
 #include <action_msgs/srv/cancel_goal.hpp>
@@ -73,196 +74,99 @@ private:
   CancelRequester cancel_requester_;
 };
 
+FrontierExplorerCoreParams toCoreParams(const frontier_explorer_params::Params & params)
+{
+  FrontierExplorerCoreParams core;
+  core.map_topic = params.topics.map;
+  core.costmap_topic = params.topics.costmap;
+  core.local_costmap_topic = params.topics.local_costmap;
+  core.navigate_to_pose_action_name = params.actions.navigate_to_pose;
+  core.global_frame = params.frames.global;
+  core.robot_base_frame = params.frames.robot_base;
+  core.frontier_marker_topic = params.topics.frontier_markers;
+  core.selected_frontier_topic = params.topics.selected_frontier;
+  core.optimized_map_topic = params.topics.optimized_map;
+  core.frontier_marker_scale = params.visualization.marker_scale;
+  core.frontier_map_optimization_enabled = params.map_optimization.enabled;
+  core.sigma_s = params.map_optimization.sigma_s;
+  core.sigma_r = params.map_optimization.sigma_r;
+  core.dilation_kernel_radius_cells = static_cast<int>(params.map_optimization.dilation_kernel_radius_cells);
+  core.sensor_effective_range_m = params.ordering.sensor_effective_range_m;
+  core.weight_distance_wd = params.ordering.weight_distance;
+  core.weight_gain_ws = params.ordering.weight_gain;
+  core.max_linear_speed_vmax = params.ordering.max_linear_speed;
+  core.max_angular_speed_wmax = params.ordering.max_angular_speed;
+  core.mrtsp_solver = params.ordering.solver;
+  core.dp_solver_candidate_limit = static_cast<std::size_t>(params.ordering.dp.candidate_limit);
+  core.dp_planning_horizon = static_cast<std::size_t>(params.ordering.dp.planning_horizon);
+  core.occ_threshold = static_cast<int>(params.frontier.occ_threshold);
+  core.min_frontier_size_cells = static_cast<int>(params.frontier.min_size_cells);
+  core.frontier_candidate_min_goal_distance_m = params.frontier.candidate_min_goal_distance_m;
+  core.frontier_selection_min_distance = params.frontier.selection_min_distance;
+  core.escape_enabled = params.escape.enabled;
+  core.frontier_visit_tolerance = params.frontier.visit_tolerance;
+  core.goal_preemption_enabled = params.preemption.enabled;
+  core.goal_skip_on_blocked_goal = params.preemption.skip_on_blocked_goal;
+  core.goal_preemption_min_interval_s = params.preemption.min_interval_s;
+  core.goal_preemption_lidar_range_m = params.preemption.lidar.range_m;
+  core.goal_preemption_lidar_fov_deg = params.preemption.lidar.fov_deg;
+  core.goal_preemption_lidar_ray_step_deg = params.preemption.lidar.ray_step_deg;
+  core.goal_preemption_complete_if_within_m = params.preemption.complete_if_within_m;
+  core.goal_preemption_lidar_min_reveal_length_m = params.preemption.lidar.min_reveal_length_m;
+  core.goal_preemption_lidar_yaw_offset_deg = params.preemption.lidar.yaw_offset_deg;
+  core.post_goal_settle_enabled = params.post_goal_settle.enabled;
+  core.post_goal_min_settle = params.post_goal_settle.min_settle_s;
+  core.map_processing_rate_hz = params.map_processing.rate_hz;
+  core.return_to_start_on_complete = params.completion.return_to_start;
+  core.all_frontiers_suppressed_behavior = params.completion.all_suppressed_behavior;
+  core.frontier_suppression_enabled = params.suppression.enabled;
+  core.frontier_suppression_attempt_threshold = static_cast<int>(params.suppression.attempt_threshold);
+  core.frontier_suppression_base_size_m = params.suppression.base_size_m;
+  core.frontier_suppression_expansion_size_m = params.suppression.expansion_size_m;
+  core.frontier_suppression_timeout_s = params.suppression.timeout_s;
+  core.frontier_suppression_no_progress_timeout_s = params.suppression.no_progress_timeout_s;
+  core.frontier_suppression_progress_epsilon_m = params.suppression.progress_epsilon_m;
+  core.frontier_suppression_startup_grace_period_s = params.suppression.startup_grace_period_s;
+  core.frontier_suppression_max_attempt_records = static_cast<int>(params.suppression.max_attempt_records);
+  core.frontier_suppression_max_regions = static_cast<int>(params.suppression.max_regions);
+  return core;
+}
+
 }  // namespace
 
 FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
 : Node("frontier_explorer", options)
 {
-  // Declare full user-facing integration surface (topics, behavior, QoS, integration hooks).
-  // Topic/action defaults are namespace-aware (no leading slash) for multi-robot composability.
-  this->declare_parameter<std::string>("map_topic", "map");
-  this->declare_parameter<std::string>("costmap_topic", "global_costmap/costmap");
-  this->declare_parameter<std::string>("local_costmap_topic", "local_costmap/costmap");
-  this->declare_parameter<std::string>("navigate_to_pose_action_name", "navigate_to_pose");
-  this->declare_parameter<std::string>("global_frame", "map");
-  this->declare_parameter<std::string>("robot_base_frame", "base_footprint");
-  this->declare_parameter<std::string>("frontier_marker_topic", "explore/frontiers");
-  this->declare_parameter<std::string>("selected_frontier_topic", "explore/selected_frontier");
-  this->declare_parameter<std::string>("optimized_map_topic", "explore/optimized_map");
-  this->declare_parameter<std::string>("map_qos_durability", "transient_local");
-  this->declare_parameter<std::string>("map_qos_reliability", "reliable");
-  this->declare_parameter<int>("map_qos_depth", 1);
-  this->declare_parameter<bool>("map_qos_autodetect_on_startup", false);
-  this->declare_parameter<double>("map_qos_autodetect_timeout_s", 2.0);
-  this->declare_parameter<std::string>("costmap_qos_reliability", "reliable");
-  this->declare_parameter<int>("costmap_qos_depth", 10);
-  this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
-  this->declare_parameter<int>("local_costmap_qos_depth", -1);
-  this->declare_parameter<double>("frontier_marker_scale", 0.15);
-  this->declare_parameter<bool>("autostart", true);
-  this->declare_parameter<bool>("control_service_enabled", true);
-  this->declare_parameter<bool>("frontier_map_optimization_enabled", true);
-  this->declare_parameter<double>("sigma_s", 2.0);
-  this->declare_parameter<double>("sigma_r", 30.0);
-  this->declare_parameter<int>("dilation_kernel_radius_cells", 1);
-  this->declare_parameter<double>("sensor_effective_range_m", 1.5);
-  this->declare_parameter<double>("weight_distance_wd", 1.0);
-  this->declare_parameter<double>("weight_gain_ws", 1.0);
-  this->declare_parameter<double>("max_linear_speed_vmax", 0.5);
-  this->declare_parameter<double>("max_angular_speed_wmax", 1.0);
-  // Solver selection stays MRTSP-specific, while the bounded-DP limits are named
-  // by algorithm so the same controls can describe other DP-based route policies.
-  this->declare_parameter<std::string>("mrtsp_solver", "dp");
-  this->declare_parameter<int>("dp_solver_candidate_limit", 15);
-  this->declare_parameter<int>("dp_planning_horizon", 10);
-  this->declare_parameter<int>("occ_threshold", 50);
-  this->declare_parameter<int>("min_frontier_size_cells", 5);
-  this->declare_parameter<double>("frontier_candidate_min_goal_distance_m", 0.0);
-  this->declare_parameter<double>("frontier_selection_min_distance", 0.5);
-  this->declare_parameter<bool>("escape_enabled", false);
-  this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
-  this->declare_parameter<bool>("goal_preemption_enabled", false);
-  this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
-  this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
-  this->declare_parameter<double>("goal_preemption_lidar_range_m", 12.0);
-  this->declare_parameter<double>("goal_preemption_lidar_fov_deg", 360.0);
-  this->declare_parameter<double>("goal_preemption_lidar_ray_step_deg", 1.0);
-  this->declare_parameter<double>("goal_preemption_complete_if_within_m", 0.0);
-  this->declare_parameter<double>("goal_preemption_lidar_min_reveal_length_m", 0.5);
-  this->declare_parameter<double>("goal_preemption_lidar_yaw_offset_deg", 0.0);
-  this->declare_parameter<bool>("post_goal_settle_enabled", true);
-  this->declare_parameter<double>("post_goal_min_settle", 0.80);
-  this->declare_parameter<double>("map_processing_rate_hz", 1.0);
-  this->declare_parameter<bool>("return_to_start_on_complete", true);
-  this->declare_parameter<std::string>("all_frontiers_suppressed_behavior", "stay");
-  this->declare_parameter<bool>("frontier_suppression_enabled", false);
-  this->declare_parameter<int>("frontier_suppression_attempt_threshold", 3);
-  this->declare_parameter<double>("frontier_suppression_base_size_m", 1.0);
-  this->declare_parameter<double>("frontier_suppression_expansion_size_m", 0.5);
-  this->declare_parameter<double>("frontier_suppression_timeout_s", 90.0);
-  this->declare_parameter<double>("frontier_suppression_no_progress_timeout_s", 20.0);
-  this->declare_parameter<double>("frontier_suppression_progress_epsilon_m", 0.05);
-  this->declare_parameter<double>("frontier_suppression_startup_grace_period_s", 15.0);
-  this->declare_parameter<int>("frontier_suppression_max_attempt_records", 256);
-  this->declare_parameter<int>("frontier_suppression_max_regions", 64);
-  this->declare_parameter<bool>("completion_event_enabled", false);
-  this->declare_parameter<std::string>("completion_event_topic", "exploration_complete");
-
-  // Read navigation/exploration behavior parameters first; QoS parsing is handled separately.
-  params_.map_topic = this->get_parameter("map_topic").as_string();
-  params_.costmap_topic = this->get_parameter("costmap_topic").as_string();
-  params_.local_costmap_topic = this->get_parameter("local_costmap_topic").as_string();
-  params_.navigate_to_pose_action_name = this->get_parameter("navigate_to_pose_action_name").as_string();
-  params_.global_frame = this->get_parameter("global_frame").as_string();
-  params_.robot_base_frame = this->get_parameter("robot_base_frame").as_string();
-  params_.frontier_marker_topic = this->get_parameter("frontier_marker_topic").as_string();
-  params_.selected_frontier_topic = this->get_parameter("selected_frontier_topic").as_string();
-  params_.optimized_map_topic = this->get_parameter("optimized_map_topic").as_string();
-  params_.frontier_marker_scale = this->get_parameter("frontier_marker_scale").as_double();
-  autostart_ = this->get_parameter("autostart").as_bool();
-  control_service_enabled_ = this->get_parameter("control_service_enabled").as_bool();
+  const auto params = frontier_explorer_params::ParamListener(
+    this->get_node_parameters_interface(), this->get_logger()).get_params();
+  params_ = toCoreParams(params);
+  autostart_ = params.control.autostart;
+  control_service_enabled_ = params.control.service_enabled;
   if (!autostart_ && !control_service_enabled_) {
     control_service_enabled_ = true;
     RCLCPP_WARN(
       this->get_logger(),
-      "control_service_enabled=false is ignored when autostart=false; control service remains enabled");
+      "control.service_enabled=false is ignored when control.autostart=false; control service remains enabled");
   }
-  params_.frontier_map_optimization_enabled = this->get_parameter(
-    "frontier_map_optimization_enabled").as_bool();
-  params_.sigma_s = this->get_parameter("sigma_s").as_double();
-  params_.sigma_r = this->get_parameter("sigma_r").as_double();
-  params_.dilation_kernel_radius_cells = this->get_parameter("dilation_kernel_radius_cells").as_int();
-  params_.sensor_effective_range_m = this->get_parameter("sensor_effective_range_m").as_double();
-  params_.weight_distance_wd = this->get_parameter("weight_distance_wd").as_double();
-  params_.weight_gain_ws = this->get_parameter("weight_gain_ws").as_double();
-  params_.max_linear_speed_vmax = this->get_parameter("max_linear_speed_vmax").as_double();
-  params_.max_angular_speed_wmax = this->get_parameter("max_angular_speed_wmax").as_double();
-  params_.mrtsp_solver = this->get_parameter("mrtsp_solver").as_string();
-  // ROS parameters are read as signed integers, then converted to positive size_t
-  // limits before they enter the solver configuration.
-  const auto dp_solver_candidate_limit = this->get_parameter(
-    "dp_solver_candidate_limit").as_int();
-  params_.dp_solver_candidate_limit = dp_solver_candidate_limit > 0 ?
-    static_cast<std::size_t>(dp_solver_candidate_limit) : 1U;
-  const auto dp_planning_horizon = this->get_parameter("dp_planning_horizon").as_int();
-  params_.dp_planning_horizon = dp_planning_horizon > 0 ?
-    static_cast<std::size_t>(dp_planning_horizon) : 1U;
-  params_.occ_threshold = this->get_parameter("occ_threshold").as_int();
-  params_.min_frontier_size_cells = this->get_parameter("min_frontier_size_cells").as_int();
-  params_.frontier_candidate_min_goal_distance_m = this->get_parameter(
-    "frontier_candidate_min_goal_distance_m").as_double();
-  params_.frontier_selection_min_distance = this->get_parameter(
-    "frontier_selection_min_distance").as_double();
-  params_.escape_enabled = this->get_parameter("escape_enabled").as_bool();
-  params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
-  params_.goal_preemption_enabled = this->get_parameter(
-    "goal_preemption_enabled").as_bool();
-  params_.goal_skip_on_blocked_goal = this->get_parameter("goal_skip_on_blocked_goal").as_bool();
-  params_.goal_preemption_min_interval_s = this->get_parameter("goal_preemption_min_interval_s").as_double();
-  params_.goal_preemption_lidar_range_m = this->get_parameter(
-    "goal_preemption_lidar_range_m").as_double();
-  params_.goal_preemption_lidar_fov_deg = this->get_parameter(
-    "goal_preemption_lidar_fov_deg").as_double();
-  params_.goal_preemption_lidar_ray_step_deg = this->get_parameter(
-    "goal_preemption_lidar_ray_step_deg").as_double();
-  params_.goal_preemption_complete_if_within_m = this->get_parameter(
-    "goal_preemption_complete_if_within_m").as_double();
-  params_.goal_preemption_lidar_min_reveal_length_m = this->get_parameter(
-    "goal_preemption_lidar_min_reveal_length_m").as_double();
-  params_.goal_preemption_lidar_yaw_offset_deg = this->get_parameter(
-    "goal_preemption_lidar_yaw_offset_deg").as_double();
-  params_.post_goal_settle_enabled = this->get_parameter("post_goal_settle_enabled").as_bool();
-  params_.post_goal_min_settle = this->get_parameter("post_goal_min_settle").as_double();
-  params_.map_processing_rate_hz = this->get_parameter("map_processing_rate_hz").as_double();
-  params_.return_to_start_on_complete = this->get_parameter("return_to_start_on_complete").as_bool();
-  params_.all_frontiers_suppressed_behavior = this->get_parameter(
-    "all_frontiers_suppressed_behavior").as_string();
-  params_.frontier_suppression_enabled = this->get_parameter("frontier_suppression_enabled").as_bool();
-  params_.frontier_suppression_attempt_threshold = this->get_parameter(
-    "frontier_suppression_attempt_threshold").as_int();
-  params_.frontier_suppression_base_size_m = this->get_parameter(
-    "frontier_suppression_base_size_m").as_double();
-  params_.frontier_suppression_expansion_size_m = this->get_parameter(
-    "frontier_suppression_expansion_size_m").as_double();
-  params_.frontier_suppression_timeout_s = this->get_parameter(
-    "frontier_suppression_timeout_s").as_double();
-  params_.frontier_suppression_no_progress_timeout_s = this->get_parameter(
-    "frontier_suppression_no_progress_timeout_s").as_double();
-  params_.frontier_suppression_progress_epsilon_m = this->get_parameter(
-    "frontier_suppression_progress_epsilon_m").as_double();
-  params_.frontier_suppression_startup_grace_period_s = this->get_parameter(
-    "frontier_suppression_startup_grace_period_s").as_double();
-  params_.frontier_suppression_max_attempt_records = this->get_parameter(
-    "frontier_suppression_max_attempt_records").as_int();
-  params_.frontier_suppression_max_regions = this->get_parameter(
-    "frontier_suppression_max_regions").as_int();
-  completion_event_config_.enabled = this->get_parameter("completion_event_enabled").as_bool();
-  completion_event_config_.topic = this->get_parameter("completion_event_topic").as_string();
-  if (completion_event_config_.enabled && completion_event_config_.topic.empty()) {
-    throw std::runtime_error(
-            "completion_event_topic must be set when completion_event_enabled=true");
-  }
-  // At this point, params_ contains only behavior parameters; QoS is parsed separately below.
+  completion_event_config_.enabled = params.completion.event_enabled;
+  completion_event_config_.topic = params.topics.completion_event;
 
   try {
     // Parse and validate QoS strings once at startup for explicit, predictable runtime profiles.
     topic_qos_profiles_ = resolve_topic_qos_profiles(
-      this->get_parameter("map_qos_durability").as_string(),
-      this->get_parameter("map_qos_reliability").as_string(),
-      this->get_parameter("map_qos_depth").as_int(),
-      this->get_parameter("costmap_qos_reliability").as_string(),
-      this->get_parameter("costmap_qos_depth").as_int(),
-      this->get_parameter("local_costmap_qos_reliability").as_string(),
-      this->get_parameter("local_costmap_qos_depth").as_int());
+      params.qos.map.durability,
+      params.qos.map.reliability,
+      params.qos.map.depth,
+      params.qos.costmap.reliability,
+      params.qos.costmap.depth,
+      params.qos.local_costmap.reliability,
+      params.qos.local_costmap.depth);
   } catch (const std::exception & exc) {
     throw std::runtime_error(std::string("Invalid QoS parameter configuration: ") + exc.what());
   }
 
-  map_qos_autodetect_on_startup_ = this->get_parameter("map_qos_autodetect_on_startup").as_bool();
-  map_qos_autodetect_timeout_s_ = std::max(
-    0.2,
-    this->get_parameter("map_qos_autodetect_timeout_s").as_double());
-  // Timeout lower bound avoids too-fast timer churn in startup autodetect mode.
+  map_qos_autodetect_on_startup_ = params.qos.map.autodetect_on_startup;
+  map_qos_autodetect_timeout_s_ = params.qos.map.autodetect_timeout_s;
 
   navigate_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(
     this,

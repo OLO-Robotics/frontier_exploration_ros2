@@ -37,6 +37,8 @@ limitations under the License.
 #include "frontier_exploration_ros2/debug/debug_analyzer.hpp"
 #include "frontier_exploration_ros2/debug/debug_markers.hpp"
 #include "frontier_exploration_ros2/qos_utils.hpp"
+#include "frontier_debug_observer_parameters.hpp"
+#include "frontier_explorer_parameters.hpp"
 
 namespace frontier_exploration_ros2::debug
 {
@@ -45,20 +47,6 @@ namespace
 {
 
 constexpr const char * kChunkCacheTopic = "explore/debug/chunk_cache";
-
-std::size_t positive_size_parameter(
-  const rclcpp::Node & node,
-  const std::string & name,
-  int fallback)
-{
-  // Label limits and DP settings are clamped to at least one item. This prevents
-  // invalid launch values from disabling arrays in ways that look like topic loss.
-  const int value = node.get_parameter(name).as_int();
-  if (value > 0) {
-    return static_cast<std::size_t>(value);
-  }
-  return static_cast<std::size_t>(std::max(1, fallback));
-}
 
 }  // namespace
 
@@ -70,7 +58,6 @@ public:
   {
     // This node is intentionally passive: it subscribes, analyzes, and publishes
     // RViz overlays, but it never sends Nav2 goals or mutates explorer state.
-    declare_parameters();
     read_parameters();
     create_ros_interfaces();
     RCLCPP_INFO(
@@ -82,142 +69,79 @@ public:
   }
 
 private:
-  void declare_parameters()
-  {
-    // Input topics and frames mirror the explorer node so the debug observer can
-    // analyze the same map/costmap/TF context from a separate process.
-    declare_parameter<std::string>("map_topic", "map");
-    declare_parameter<std::string>("costmap_topic", "global_costmap/costmap");
-    declare_parameter<std::string>("local_costmap_topic", "local_costmap/costmap");
-    declare_parameter<std::string>("global_frame", "map");
-    declare_parameter<std::string>("robot_base_frame", "base_footprint");
-    declare_parameter<std::string>("map_qos_durability", "transient_local");
-    declare_parameter<std::string>("map_qos_reliability", "reliable");
-    declare_parameter<int>("map_qos_depth", 1);
-    declare_parameter<std::string>("costmap_qos_reliability", "reliable");
-    declare_parameter<int>("costmap_qos_depth", 10);
-    declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
-    declare_parameter<int>("local_costmap_qos_depth", -1);
-
-    // Explorer scoring parameters are declared here as read-only inputs for the
-    // analyzer. They are not used to control exploration from this node.
-    declare_parameter<bool>("frontier_map_optimization_enabled", true);
-    declare_parameter<double>("sigma_s", 2.0);
-    declare_parameter<double>("sigma_r", 30.0);
-    declare_parameter<int>("dilation_kernel_radius_cells", 1);
-    declare_parameter<double>("sensor_effective_range_m", 1.5);
-    declare_parameter<double>("weight_distance_wd", 1.0);
-    declare_parameter<double>("weight_gain_ws", 1.0);
-    declare_parameter<double>("max_linear_speed_vmax", 0.5);
-    declare_parameter<double>("max_angular_speed_wmax", 1.0);
-    declare_parameter<std::string>("mrtsp_solver", "dp");
-    declare_parameter<int>("dp_solver_candidate_limit", 15);
-    declare_parameter<int>("dp_planning_horizon", 10);
-    declare_parameter<int>("occ_threshold", OCC_THRESHOLD);
-    declare_parameter<int>("min_frontier_size_cells", MIN_FRONTIER_SIZE);
-    declare_parameter<double>("frontier_candidate_min_goal_distance_m", 0.0);
-    declare_parameter<double>("frontier_selection_min_distance", 0.5);
-    declare_parameter<double>("frontier_visit_tolerance", 0.30);
-
-    // RViz output parameters keep visual density adjustable without changing the
-    // score analysis. Top-N limits protect RViz from very dense frontier sets.
-    declare_parameter<double>("debug_update_rate_hz", 1.0);
-    declare_parameter<bool>("debug_labels_enabled", true);
-    declare_parameter<int>("debug_label_top_n", 30);
-    declare_parameter<int>("debug_edge_top_n", 15);
-    declare_parameter<double>("debug_marker_scale", 0.15);
-    declare_parameter<double>("debug_selected_marker_scale", 0.30);
-    declare_parameter<double>("debug_line_width", 0.04);
-    declare_parameter<double>("debug_text_scale", 0.22);
-    declare_parameter<bool>("debug_show_raw_frontiers", true);
-    declare_parameter<bool>("debug_show_optimized_frontiers", true);
-    declare_parameter<bool>("debug_show_mrtsp_scores", true);
-    declare_parameter<bool>("debug_show_mrtsp_order", true);
-    declare_parameter<bool>("debug_show_dp_pruning", true);
-    declare_parameter<bool>("debug_show_decision_map", true);
-    declare_parameter<std::string>("debug_raw_frontiers_topic", "explore/debug/raw_frontiers");
-    declare_parameter<std::string>("debug_optimized_frontiers_topic", "explore/debug/optimized_frontiers");
-    declare_parameter<std::string>("debug_mrtsp_scores_topic", "explore/debug/mrtsp_scores");
-    declare_parameter<std::string>("debug_mrtsp_order_topic", "explore/debug/mrtsp_order");
-    declare_parameter<std::string>("debug_dp_pruning_topic", "explore/debug/dp_pruning");
-    declare_parameter<std::string>("debug_decision_map_topic", "explore/debug/decision_map");
-  }
-
   void read_parameters()
   {
-    // Parameters are copied into plain structs once at startup. The observer is
-    // designed for stable debug sessions rather than dynamic reconfiguration.
-    map_topic_ = get_parameter("map_topic").as_string();
-    costmap_topic_ = get_parameter("costmap_topic").as_string();
-    local_costmap_topic_ = get_parameter("local_costmap_topic").as_string();
-    global_frame_ = get_parameter("global_frame").as_string();
-    robot_base_frame_ = get_parameter("robot_base_frame").as_string();
+    // Explorer parameters mirror the explorer node so the same file drives both.
+    // Parameters are read once; the observer does not reconfigure at runtime.
+    const auto explorer = frontier_explorer_params::ParamListener(
+      get_node_parameters_interface(), get_logger()).get_params();
+    const auto observer = frontier_debug_observer_params::ParamListener(
+      get_node_parameters_interface(), get_logger()).get_params();
 
-    analyzer_config_.frontier_map_optimization_enabled =
-      get_parameter("frontier_map_optimization_enabled").as_bool();
-    analyzer_config_.sigma_s = get_parameter("sigma_s").as_double();
-    analyzer_config_.sigma_r = get_parameter("sigma_r").as_double();
+    map_topic_ = explorer.topics.map;
+    costmap_topic_ = explorer.topics.costmap;
+    local_costmap_topic_ = explorer.topics.local_costmap;
+    global_frame_ = explorer.frames.global;
+    robot_base_frame_ = explorer.frames.robot_base;
+
+    analyzer_config_.frontier_map_optimization_enabled = explorer.map_optimization.enabled;
+    analyzer_config_.sigma_s = explorer.map_optimization.sigma_s;
+    analyzer_config_.sigma_r = explorer.map_optimization.sigma_r;
     analyzer_config_.dilation_kernel_radius_cells =
-      get_parameter("dilation_kernel_radius_cells").as_int();
-    analyzer_config_.sensor_effective_range_m =
-      get_parameter("sensor_effective_range_m").as_double();
-    analyzer_config_.weight_distance_wd = get_parameter("weight_distance_wd").as_double();
-    analyzer_config_.weight_gain_ws = get_parameter("weight_gain_ws").as_double();
-    analyzer_config_.max_linear_speed_vmax = get_parameter("max_linear_speed_vmax").as_double();
-    analyzer_config_.max_angular_speed_wmax = get_parameter("max_angular_speed_wmax").as_double();
-    analyzer_config_.mrtsp_solver = get_parameter("mrtsp_solver").as_string();
+      static_cast<int>(explorer.map_optimization.dilation_kernel_radius_cells);
+    analyzer_config_.sensor_effective_range_m = explorer.ordering.sensor_effective_range_m;
+    analyzer_config_.weight_distance_wd = explorer.ordering.weight_distance;
+    analyzer_config_.weight_gain_ws = explorer.ordering.weight_gain;
+    analyzer_config_.max_linear_speed_vmax = explorer.ordering.max_linear_speed;
+    analyzer_config_.max_angular_speed_wmax = explorer.ordering.max_angular_speed;
+    analyzer_config_.mrtsp_solver = explorer.ordering.solver;
     analyzer_config_.dp_solver_candidate_limit =
-      positive_size_parameter(*this, "dp_solver_candidate_limit", 15);
+      static_cast<std::size_t>(explorer.ordering.dp.candidate_limit);
     analyzer_config_.dp_planning_horizon =
-      positive_size_parameter(*this, "dp_planning_horizon", 10);
-    analyzer_config_.occ_threshold = get_parameter("occ_threshold").as_int();
-    analyzer_config_.min_frontier_size_cells = get_parameter("min_frontier_size_cells").as_int();
+      static_cast<std::size_t>(explorer.ordering.dp.planning_horizon);
+    analyzer_config_.occ_threshold = static_cast<int>(explorer.frontier.occ_threshold);
+    analyzer_config_.min_frontier_size_cells = static_cast<int>(explorer.frontier.min_size_cells);
     analyzer_config_.frontier_candidate_min_goal_distance_m =
-      get_parameter("frontier_candidate_min_goal_distance_m").as_double();
-    analyzer_config_.frontier_selection_min_distance =
-      get_parameter("frontier_selection_min_distance").as_double();
-    analyzer_config_.frontier_visit_tolerance =
-      get_parameter("frontier_visit_tolerance").as_double();
+      explorer.frontier.candidate_min_goal_distance_m;
+    analyzer_config_.frontier_selection_min_distance = explorer.frontier.selection_min_distance;
+    analyzer_config_.frontier_visit_tolerance = explorer.frontier.visit_tolerance;
 
-    // Clamp visual scales and update rate to useful ranges. Extreme values can
-    // make RViz overlays invisible or unnecessarily expensive to refresh.
-    update_rate_hz_ = std::clamp(get_parameter("debug_update_rate_hz").as_double(), 0.1, 10.0);
+    update_rate_hz_ = observer.debug.update_rate_hz;
     marker_config_.frame_id = global_frame_;
-    marker_config_.point_scale = std::max(0.01, get_parameter("debug_marker_scale").as_double());
-    marker_config_.selected_scale =
-      std::max(0.02, get_parameter("debug_selected_marker_scale").as_double());
-    marker_config_.line_width = std::max(0.005, get_parameter("debug_line_width").as_double());
-    marker_config_.text_scale = std::max(0.05, get_parameter("debug_text_scale").as_double());
-    marker_config_.labels_enabled = get_parameter("debug_labels_enabled").as_bool();
-    marker_config_.label_top_n = positive_size_parameter(*this, "debug_label_top_n", 30);
-    marker_config_.edge_top_n = positive_size_parameter(*this, "debug_edge_top_n", 15);
+    marker_config_.point_scale = observer.debug.marker_scale;
+    marker_config_.selected_scale = observer.debug.selected_marker_scale;
+    marker_config_.line_width = observer.debug.line_width;
+    marker_config_.text_scale = observer.debug.text_scale;
+    marker_config_.labels_enabled = observer.debug.labels_enabled;
+    marker_config_.label_top_n = static_cast<std::size_t>(observer.debug.label_top_n);
+    marker_config_.edge_top_n = static_cast<std::size_t>(observer.debug.edge_top_n);
 
-    show_raw_frontiers_ = get_parameter("debug_show_raw_frontiers").as_bool();
-    show_optimized_frontiers_ = get_parameter("debug_show_optimized_frontiers").as_bool();
-    show_mrtsp_scores_ = get_parameter("debug_show_mrtsp_scores").as_bool();
-    show_mrtsp_order_ = get_parameter("debug_show_mrtsp_order").as_bool();
-    show_dp_pruning_ = get_parameter("debug_show_dp_pruning").as_bool();
-    show_decision_map_ = get_parameter("debug_show_decision_map").as_bool();
+    show_raw_frontiers_ = observer.debug.show.raw_frontiers;
+    show_optimized_frontiers_ = observer.debug.show.optimized_frontiers;
+    show_mrtsp_scores_ = observer.debug.show.mrtsp_scores;
+    show_mrtsp_order_ = observer.debug.show.mrtsp_order;
+    show_dp_pruning_ = observer.debug.show.dp_pruning;
+    show_decision_map_ = observer.debug.show.decision_map;
 
     // MRTSP order still needs MRTSP scores because it depends on the same cost matrix.
     analyzer_config_.analyze_mrtsp_scores = show_mrtsp_scores_ || show_mrtsp_order_;
     analyzer_config_.analyze_dp_pruning = show_dp_pruning_;
 
-    raw_frontiers_topic_ = get_parameter("debug_raw_frontiers_topic").as_string();
-    optimized_frontiers_topic_ = get_parameter("debug_optimized_frontiers_topic").as_string();
-    mrtsp_scores_topic_ = get_parameter("debug_mrtsp_scores_topic").as_string();
-    mrtsp_order_topic_ = get_parameter("debug_mrtsp_order_topic").as_string();
-    dp_pruning_topic_ = get_parameter("debug_dp_pruning_topic").as_string();
-    decision_map_topic_ = get_parameter("debug_decision_map_topic").as_string();
+    raw_frontiers_topic_ = observer.debug.topics.raw_frontiers;
+    optimized_frontiers_topic_ = observer.debug.topics.optimized_frontiers;
+    mrtsp_scores_topic_ = observer.debug.topics.mrtsp_scores;
+    mrtsp_order_topic_ = observer.debug.topics.mrtsp_order;
+    dp_pruning_topic_ = observer.debug.topics.dp_pruning;
+    decision_map_topic_ = observer.debug.topics.decision_map;
 
     topic_qos_profiles_ = resolve_topic_qos_profiles(
-      get_parameter("map_qos_durability").as_string(),
-      get_parameter("map_qos_reliability").as_string(),
-      get_parameter("map_qos_depth").as_int(),
-      get_parameter("costmap_qos_reliability").as_string(),
-      get_parameter("costmap_qos_depth").as_int(),
-      get_parameter("local_costmap_qos_reliability").as_string(),
-      get_parameter("local_costmap_qos_depth").as_int());
+      explorer.qos.map.durability,
+      explorer.qos.map.reliability,
+      explorer.qos.map.depth,
+      explorer.qos.costmap.reliability,
+      explorer.qos.costmap.depth,
+      explorer.qos.local_costmap.reliability,
+      explorer.qos.local_costmap.depth);
   }
 
   void create_ros_interfaces()

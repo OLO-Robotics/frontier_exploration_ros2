@@ -1,0 +1,118 @@
+frontier_debug_observer_params:
+  debug:
+    update_rate_hz:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Analysis and overlay refresh rate."
+      validation:
+        bounds<>: [0.1, 10.0]
+    labels_enabled:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Draw score labels next to frontiers."
+    label_top_n:
+      type: int
+      default_value: 30
+      read_only: true
+      description: "Maximum number of labelled frontiers."
+      validation:
+        gt_eq<>: [1]
+    edge_top_n:
+      type: int
+      default_value: 15
+      read_only: true
+      description: "Maximum number of drawn ordering edges."
+      validation:
+        gt_eq<>: [1]
+    marker_scale:
+      type: double
+      default_value: 0.15
+      read_only: true
+      description: "Frontier point marker size."
+      validation:
+        gt_eq<>: [0.01]
+    selected_marker_scale:
+      type: double
+      default_value: 0.30
+      read_only: true
+      description: "Selected frontier marker size."
+      validation:
+        gt_eq<>: [0.02]
+    line_width:
+      type: double
+      default_value: 0.04
+      read_only: true
+      description: "Ordering edge line width."
+      validation:
+        gt_eq<>: [0.005]
+    text_scale:
+      type: double
+      default_value: 0.22
+      read_only: true
+      description: "Label text height."
+      validation:
+        gt_eq<>: [0.05]
+    show:
+      raw_frontiers:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish raw frontier overlays."
+      optimized_frontiers:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish optimized frontier overlays."
+      mrtsp_scores:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish ordering score overlays."
+      mrtsp_order:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish ordering route overlays."
+      dp_pruning:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish dp pruning overlays."
+      decision_map:
+        type: bool
+        default_value: true
+        read_only: true
+        description: "Publish the decision map."
+    topics:
+      raw_frontiers:
+        type: string
+        default_value: "explore/debug/raw_frontiers"
+        read_only: true
+        description: "Raw frontier overlay topic."
+      optimized_frontiers:
+        type: string
+        default_value: "explore/debug/optimized_frontiers"
+        read_only: true
+        description: "Optimized frontier overlay topic."
+      mrtsp_scores:
+        type: string
+        default_value: "explore/debug/mrtsp_scores"
+        read_only: true
+        description: "Ordering score overlay topic."
+      mrtsp_order:
+        type: string
+        default_value: "explore/debug/mrtsp_order"
+        read_only: true
+        description: "Ordering route overlay topic."
+      dp_pruning:
+        type: string
+        default_value: "explore/debug/dp_pruning"
+        read_only: true
+        description: "dp pruning overlay topic."
+      decision_map:
+        type: string
+        default_value: "explore/debug/decision_map"
+        read_only: true
+        description: "Decision map topic."

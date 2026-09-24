@@ -37,21 +37,21 @@ def _create_frontier_actions(context):
 
     frontier_overrides: dict[str, Any] = {
         "use_sim_time": use_sim_time,
-        "map_qos_durability": map_qos_durability,
-        "map_qos_autodetect_on_startup": map_qos_autodetect_on_startup,
-        "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
-        "costmap_qos_reliability": costmap_qos_reliability,
+        "qos.map.durability": map_qos_durability,
+        "qos.map.autodetect_on_startup": map_qos_autodetect_on_startup,
+        "qos.map.autodetect_timeout_s": map_qos_autodetect_timeout_s,
+        "qos.costmap.reliability": costmap_qos_reliability,
     }
     autostart_override = _parse_optional_bool(autostart_value, "autostart")
     if autostart_override is not None:
-        frontier_overrides["autostart"] = autostart_override
+        frontier_overrides["control.autostart"] = autostart_override
 
     control_service_enabled_override = _parse_optional_bool(
         control_service_enabled_value,
         "control_service_enabled",
     )
     if control_service_enabled_override is not None:
-        frontier_overrides["control_service_enabled"] = control_service_enabled_override
+        frontier_overrides["control.service_enabled"] = control_service_enabled_override
 
     frontier_node = Node(
         package="frontier_exploration_ros2",

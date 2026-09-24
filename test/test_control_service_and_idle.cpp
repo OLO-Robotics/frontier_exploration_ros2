@@ -184,10 +184,10 @@ protected:
   {
     rclcpp::NodeOptions options;
     options.parameter_overrides({
-      rclcpp::Parameter("autostart", autostart),
-      rclcpp::Parameter("control_service_enabled", control_service_enabled),
-      rclcpp::Parameter("completion_event_enabled", false),
-      rclcpp::Parameter("frontier_suppression_enabled", false),
+      rclcpp::Parameter("control.autostart", autostart),
+      rclcpp::Parameter("control.service_enabled", control_service_enabled),
+      rclcpp::Parameter("completion.event_enabled", false),
+      rclcpp::Parameter("suppression.enabled", false),
     });
     node_ = std::make_shared<FrontierExplorerNode>(options);
     executor_->add_node(node_);

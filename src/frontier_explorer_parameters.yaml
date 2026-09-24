@@ -1,0 +1,452 @@
+frontier_explorer_params:
+  frames:
+    global:
+      type: string
+      default_value: "map"
+      read_only: true
+      description: "Global frame used for frontier goals and TF lookups."
+      validation:
+        not_empty<>: []
+    robot_base:
+      type: string
+      default_value: "base_footprint"
+      read_only: true
+      description: "Robot base frame used for TF lookups."
+      validation:
+        not_empty<>: []
+
+  topics:
+    map:
+      type: string
+      default_value: "map"
+      read_only: true
+      description: "Occupancy grid used for frontier extraction."
+      validation:
+        not_empty<>: []
+    costmap:
+      type: string
+      default_value: "global_costmap/costmap"
+      read_only: true
+      description: "Global costmap used to validate frontiers and goals."
+      validation:
+        not_empty<>: []
+    local_costmap:
+      type: string
+      default_value: "local_costmap/costmap"
+      read_only: true
+      description: "Local costmap used for near-field blocked-goal checks."
+      validation:
+        not_empty<>: []
+    frontier_markers:
+      type: string
+      default_value: "explore/frontiers"
+      read_only: true
+      description: "MarkerArray of the current frontier goal points."
+    selected_frontier:
+      type: string
+      default_value: "explore/selected_frontier"
+      read_only: true
+      description: "Selected frontier pose, published only at debug log level."
+    optimized_map:
+      type: string
+      default_value: "explore/optimized_map"
+      read_only: true
+      description: "Optimized decision map, published only at debug log level."
+    completion_event:
+      type: string
+      default_value: "exploration_complete"
+      read_only: true
+      description: "Latched Empty event published when a session completes."
+      validation:
+        not_empty<>: []
+
+  actions:
+    navigate_to_pose:
+      type: string
+      default_value: "navigate_to_pose"
+      read_only: true
+      description: "Nav2 NavigateToPose action used to dispatch goals."
+      validation:
+        not_empty<>: []
+
+  qos:
+    map:
+      durability:
+        type: string
+        default_value: "transient_local"
+        read_only: true
+        description: "Map subscription durability."
+        validation:
+          one_of<>: [["transient_local", "volatile", "system_default"]]
+      reliability:
+        type: string
+        default_value: "reliable"
+        read_only: true
+        description: "Map subscription reliability."
+        validation:
+          one_of<>: [["reliable", "best_effort", "system_default"]]
+      depth:
+        type: int
+        default_value: 1
+        read_only: true
+        description: "Map subscription queue depth."
+        validation:
+          gt_eq<>: [1]
+      autodetect_on_startup:
+        type: bool
+        default_value: false
+        read_only: true
+        description: "Probe map durability at startup instead of trusting qos.map.durability."
+      autodetect_timeout_s:
+        type: double
+        default_value: 2.0
+        read_only: true
+        description: "Timeout per map durability autodetect attempt."
+        validation:
+          gt_eq<>: [0.2]
+    costmap:
+      reliability:
+        type: string
+        default_value: "reliable"
+        read_only: true
+        description: "Global costmap subscription reliability. Durability is always volatile."
+        validation:
+          one_of<>: [["reliable", "best_effort", "system_default"]]
+      depth:
+        type: int
+        default_value: 10
+        read_only: true
+        description: "Global costmap subscription queue depth."
+        validation:
+          gt_eq<>: [1]
+    local_costmap:
+      reliability:
+        type: string
+        default_value: "inherit"
+        read_only: true
+        description: "Local costmap subscription reliability; inherit copies qos.costmap.reliability."
+        validation:
+          one_of<>: [["inherit", "reliable", "best_effort", "system_default"]]
+      depth:
+        type: int
+        default_value: -1
+        read_only: true
+        description: "Local costmap subscription queue depth; negative inherits qos.costmap.depth."
+
+  control:
+    autostart:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Start exploring as soon as the node comes up."
+    service_enabled:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Expose the control_exploration service. Forced on when control.autostart is false."
+
+  map_processing:
+    rate_hz:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Maximum map processing rate; 0 processes every map immediately."
+      validation:
+        gt_eq<>: [0.0]
+
+  visualization:
+    marker_scale:
+      type: double
+      default_value: 0.15
+      read_only: true
+      description: "Point size of the frontier markers."
+      validation:
+        gt<>: [0.0]
+
+  frontier:
+    occ_threshold:
+      type: int
+      default_value: 50
+      read_only: true
+      description: "Cost at or above which a costmap cell blocks a frontier."
+      validation:
+        bounds<>: [0, 100]
+    min_size_cells:
+      type: int
+      default_value: 5
+      read_only: true
+      description: "Minimum connected frontier size."
+      validation:
+        gt_eq<>: [1]
+    candidate_min_goal_distance_m:
+      type: double
+      default_value: 0.0
+      read_only: true
+      description: "Minimum robot-to-candidate distance during frontier search."
+      validation:
+        gt_eq<>: [0.0]
+    selection_min_distance:
+      type: double
+      default_value: 0.5
+      read_only: true
+      description: "Preferred minimum robot-to-goal distance at dispatch."
+    visit_tolerance:
+      type: double
+      default_value: 0.30
+      read_only: true
+      description: "Distance within which frontiers are treated as the same or already visited."
+
+  map_optimization:
+    enabled:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Filter and dilate the map into a decision map before frontier search."
+    sigma_s:
+      type: double
+      default_value: 2.0
+      read_only: true
+      description: "Bilateral filter spatial sigma, in cells."
+      validation:
+        gt<>: [0.0]
+    sigma_r:
+      type: double
+      default_value: 30.0
+      read_only: true
+      description: "Bilateral filter range sigma, in occupancy intensity."
+      validation:
+        gt<>: [0.0]
+    dilation_kernel_radius_cells:
+      type: int
+      default_value: 1
+      read_only: true
+      description: "Free-space dilation radius after filtering."
+      validation:
+        gt_eq<>: [0]
+
+  ordering:
+    solver:
+      type: string
+      default_value: "dp"
+      read_only: true
+      description: "Frontier ordering solver: bounded-horizon dp or greedy."
+      validation:
+        one_of<>: [["dp", "greedy"]]
+    sensor_effective_range_m:
+      type: double
+      default_value: 1.5
+      read_only: true
+      description: "Effective sensor range subtracted from the path-cost term."
+      validation:
+        gt_eq<>: [0.0]
+    weight_distance:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Weight of the path-cost term."
+      validation:
+        gt_eq<>: [0.0]
+    weight_gain:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Exponent on frontier information gain in the path-cost term."
+      validation:
+        gt_eq<>: [0.0]
+    max_linear_speed:
+      type: double
+      default_value: 0.5
+      read_only: true
+      description: "Linear speed used to estimate time to reach a frontier."
+      validation:
+        gt<>: [0.0]
+    max_angular_speed:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Angular speed used to estimate time to face a frontier."
+      validation:
+        gt<>: [0.0]
+    dp:
+      candidate_limit:
+        type: int
+        default_value: 15
+        read_only: true
+        description: "Scored candidates passed into the dp solver."
+        validation:
+          bounds<>: [1, 60]
+      planning_horizon:
+        type: int
+        default_value: 10
+        read_only: true
+        description: "Frontier visits searched by the dp solver."
+        validation:
+          gt_eq<>: [1]
+
+  escape:
+    enabled:
+      type: bool
+      default_value: false
+      read_only: true
+      description: "Retry without minimum-distance gates until the first successful frontier goal."
+
+  preemption:
+    enabled:
+      type: bool
+      default_value: false
+      read_only: true
+      description: "Replan when the active goal would reveal too little unknown space."
+    min_interval_s:
+      type: double
+      default_value: 2.0
+      read_only: true
+      description: "Minimum time between preemption checks."
+    complete_if_within_m:
+      type: double
+      default_value: 0.0
+      read_only: true
+      description: "Treat a frontier goal as reached within this distance; 0 disables."
+      validation:
+        gt_eq<>: [0.0]
+    skip_on_blocked_goal:
+      type: bool
+      default_value: false
+      read_only: true
+      description: "Abandon the active goal when the costmaps show it blocked."
+    lidar:
+      range_m:
+        type: double
+        default_value: 12.0
+        read_only: true
+        description: "Ray length of the visibility model at the goal pose."
+        validation:
+          gt_eq<>: [0.1]
+      fov_deg:
+        type: double
+        default_value: 360.0
+        read_only: true
+        description: "Field of view of the visibility model."
+        validation:
+          bounds<>: [1.0, 360.0]
+      ray_step_deg:
+        type: double
+        default_value: 1.0
+        read_only: true
+        description: "Angular step between visibility model rays."
+        validation:
+          bounds<>: [0.25, 45.0]
+      min_reveal_length_m:
+        type: double
+        default_value: 0.5
+        read_only: true
+        description: "Minimum revealable length that keeps the active goal."
+        validation:
+          gt_eq<>: [0.0]
+      yaw_offset_deg:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Heading offset of the visibility model relative to the goal yaw."
+
+  post_goal_settle:
+    enabled:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Wait after each frontier goal result before dispatching the next."
+    min_settle_s:
+      type: double
+      default_value: 0.80
+      read_only: true
+      description: "Settle time after a frontier goal result."
+      validation:
+        gt_eq<>: [0.0]
+
+  suppression:
+    enabled:
+      type: bool
+      default_value: false
+      read_only: true
+      description: "Temporarily suppress areas whose goals repeatedly fail or stall."
+    attempt_threshold:
+      type: int
+      default_value: 3
+      read_only: true
+      description: "Failed attempts before an area is suppressed."
+      validation:
+        gt_eq<>: [1]
+    base_size_m:
+      type: double
+      default_value: 1.0
+      read_only: true
+      description: "Side length of a new suppression region."
+      validation:
+        gt_eq<>: [0.1]
+    expansion_size_m:
+      type: double
+      default_value: 0.5
+      read_only: true
+      description: "Ring around a region in which further failures grow it."
+      validation:
+        gt_eq<>: [0.0]
+    timeout_s:
+      type: double
+      default_value: 90.0
+      read_only: true
+      description: "Lifetime of attempt records and suppression regions."
+      validation:
+        gt_eq<>: [0.1]
+    no_progress_timeout_s:
+      type: double
+      default_value: 20.0
+      read_only: true
+      description: "Time without progress before the active goal counts as failed."
+      validation:
+        gt_eq<>: [0.1]
+    progress_epsilon_m:
+      type: double
+      default_value: 0.05
+      read_only: true
+      description: "Reduction in distance remaining that counts as progress."
+      validation:
+        gt_eq<>: [0.0]
+    startup_grace_period_s:
+      type: double
+      default_value: 15.0
+      read_only: true
+      description: "Delay after start before suppression becomes active."
+      validation:
+        gt_eq<>: [0.0]
+    max_attempt_records:
+      type: int
+      default_value: 256
+      read_only: true
+      description: "Cap on live failed-attempt records."
+      validation:
+        gt_eq<>: [1]
+    max_regions:
+      type: int
+      default_value: 64
+      read_only: true
+      description: "Cap on active suppression regions."
+      validation:
+        gt_eq<>: [1]
+
+  completion:
+    return_to_start:
+      type: bool
+      default_value: true
+      read_only: true
+      description: "Return to the session start pose once no frontiers remain."
+    all_suppressed_behavior:
+      type: string
+      default_value: "stay"
+      read_only: true
+      description: "Action when every detected frontier is suppressed."
+      validation:
+        one_of<>: [["stay", "return_to_start"]]
+    event_enabled:
+      type: bool
+      default_value: false
+      read_only: true
+      description: "Publish topics.completion_event when a session completes."
