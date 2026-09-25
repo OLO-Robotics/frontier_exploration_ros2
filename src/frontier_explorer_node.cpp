@@ -392,18 +392,22 @@ void FrontierExplorerNode::ensureMapProcessingTimer()
     return;
   }
 
-  if (!effective_map_processing_rate_hz_.has_value() || *effective_map_processing_rate_hz_ <= 0.0) {
+  // Process at the configured rate until startup calibration has measured the map rate.
+  // SLAM backends publish the map only when it changes, so a stationary robot may never
+  // deliver enough maps to calibrate; waiting for it would never start exploring.
+  const double rate_hz = effective_map_processing_rate_hz_.value_or(params_.map_processing_rate_hz);
+  if (rate_hz <= 0.0) {
     return;
   }
 
-  if (map_processing_timer_) {
+  if (map_processing_timer_ && map_processing_timer_rate_hz_ == rate_hz) {
     return;
   }
 
   map_processing_timer_ = this->create_wall_timer(
-    std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::duration<double>(1.0 / *effective_map_processing_rate_hz_)),
+    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate_hz)),
     std::bind(&FrontierExplorerNode::mapProcessingTimerCallback, this));
+  map_processing_timer_rate_hz_ = rate_hz;
 }
 
 void FrontierExplorerNode::resetMapProcessingCalibrationWindow()
@@ -509,11 +513,10 @@ void FrontierExplorerNode::startExplorationRuntime()
       std::bind(&FrontierExplorerNode::localCostmapUpdateCallback, this, std::placeholders::_1));
   }
   if (params_.map_processing_rate_hz > 0.0) {
-    if (effective_map_processing_rate_hz_.has_value()) {
-      ensureMapProcessingTimer();
-    } else {
+    if (!effective_map_processing_rate_hz_.has_value()) {
       resetMapProcessingCalibrationWindow();
     }
+    ensureMapProcessingTimer();
   }
 
   {

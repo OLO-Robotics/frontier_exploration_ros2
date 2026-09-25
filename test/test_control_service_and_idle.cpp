@@ -27,7 +27,10 @@ limitations under the License.
 #include <vector>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include "frontier_exploration_ros2/frontier_explorer_node.hpp"
 
@@ -350,6 +353,57 @@ TEST_F(FrontierControlNodeTests, DiagnosticsFollowStartAndStop)
 
   ASSERT_NE(call_trigger("/frontier_explorer/stop"), nullptr);
   EXPECT_TRUE(wait_for_condition([this]() { return reported_state() == "idle"; }, std::chrono::milliseconds(3000)));
+}
+
+TEST_F(FrontierControlNodeTests, ExploresFromASingleLatchedMap)
+{
+  // SLAM publishes the map only when it changes, so a robot that has not moved
+  // yet delivers one latched map and nothing more. Frontiers must still be found.
+  nav_msgs::msg::OccupancyGrid map = build_grid(40, 40, -1);
+  map.header.frame_id = "map";
+  map.info.resolution = 0.1;
+  map.info.origin.position.x = -2.0;
+  map.info.origin.position.y = -2.0;
+  for (int y = 10; y < 30; ++y) {
+    for (int x = 10; x < 30; ++x) {
+      map.data[static_cast<std::size_t>(y * 40 + x)] = 0;
+    }
+  }
+  nav_msgs::msg::OccupancyGrid costmap = build_grid(40, 40, 0);
+  costmap.header.frame_id = "map";
+  costmap.info = map.info;
+
+  auto map_pub = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    "/map", rclcpp::QoS(1).reliable().transient_local());
+  map_pub->publish(map);
+  auto costmap_pub = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    "/global_costmap/costmap", rclcpp::QoS(1).reliable());
+  auto local_costmap_pub = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    "/local_costmap/costmap", rclcpp::QoS(1).reliable());
+  tf2_ros::StaticTransformBroadcaster tf_broadcaster(helper_node_);
+  geometry_msgs::msg::TransformStamped robot_pose;
+  robot_pose.header.frame_id = "map";
+  robot_pose.child_frame_id = "base_footprint";
+  robot_pose.transform.rotation.w = 1.0;
+  tf_broadcaster.sendTransform(robot_pose);
+
+  std::size_t frontier_points = 0;
+  auto marker_sub = helper_node_->create_subscription<visualization_msgs::msg::MarkerArray>(
+    "/explore/frontiers", 10,
+    [&frontier_points](const visualization_msgs::msg::MarkerArray::ConstSharedPtr msg) {
+      for (const auto & marker : msg->markers) {
+        frontier_points += marker.points.size();
+      }
+    });
+
+  create_node(true);
+  EXPECT_TRUE(wait_for_condition(
+    [&]() {
+      costmap_pub->publish(costmap);
+      local_costmap_pub->publish(costmap);
+      return frontier_points > 0;
+    },
+    std::chrono::milliseconds(5000)));
 }
 
 TEST_F(FrontierControlNodeTests, StopWhileIdleIsANoOp)

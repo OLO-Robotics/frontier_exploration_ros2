@@ -169,6 +169,7 @@ private:
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_pending_map_msg_;
   bool pending_map_update_{false};
   std::optional<double> effective_map_processing_rate_hz_;
+  double map_processing_timer_rate_hz_{0.0};
   std::optional<std::chrono::steady_clock::time_point> last_map_arrival_at_;
   std::vector<double> startup_map_interval_samples_s_;
 
