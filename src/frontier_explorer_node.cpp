@@ -169,6 +169,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       params.qos.map.durability,
       params.qos.map.reliability,
       params.qos.map.depth,
+      params.qos.costmap.durability,
       params.qos.costmap.reliability,
       params.qos.costmap.depth,
       params.qos.local_costmap.reliability,
@@ -319,13 +320,15 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(
     this->get_logger(),
     "QoS config: map=[durability=%s,reliability=%s,depth=%zu], "
-    "costmap=[durability=volatile,reliability=%s,depth=%zu], "
-    "local_costmap=[durability=volatile,reliability=%s,depth=%zu%s%s]",
+    "costmap=[durability=%s,reliability=%s,depth=%zu], "
+    "local_costmap=[durability=%s,reliability=%s,depth=%zu%s%s]",
     durability_policy_to_string(topic_qos_profiles_.map_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.map_reliability).c_str(),
     topic_qos_profiles_.map_depth,
+    durability_policy_to_string(topic_qos_profiles_.costmap_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.costmap_reliability).c_str(),
     topic_qos_profiles_.costmap_depth,
+    durability_policy_to_string(topic_qos_profiles_.costmap_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.local_costmap_reliability).c_str(),
     topic_qos_profiles_.local_costmap_depth,
     topic_qos_profiles_.local_costmap_reliability_inherited ? " (inherit reliability)" : "",

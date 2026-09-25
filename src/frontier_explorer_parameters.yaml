@@ -136,11 +136,18 @@ frontier_explorer_params:
         validation:
           gt_eq<>: [0.2]
     costmap:
+      durability:
+        type: string
+        default_value: "transient_local"
+        read_only: true
+        description: "Costmap subscription durability, shared by the local costmap. Nav2 latches its costmaps."
+        validation:
+          one_of<>: [["transient_local", "volatile", "system_default"]]
       reliability:
         type: string
         default_value: "reliable"
         read_only: true
-        description: "Global costmap subscription reliability. Durability is always volatile."
+        description: "Global costmap subscription reliability."
         validation:
           one_of<>: [["reliable", "best_effort", "system_default"]]
       depth:

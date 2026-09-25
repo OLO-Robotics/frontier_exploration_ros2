@@ -138,6 +138,7 @@ private:
       explorer.qos.map.durability,
       explorer.qos.map.reliability,
       explorer.qos.map.depth,
+      explorer.qos.costmap.durability,
       explorer.qos.costmap.reliability,
       explorer.qos.costmap.depth,
       explorer.qos.local_costmap.reliability,

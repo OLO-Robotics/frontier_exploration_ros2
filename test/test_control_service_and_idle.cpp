@@ -355,10 +355,11 @@ TEST_F(FrontierControlNodeTests, DiagnosticsFollowStartAndStop)
   EXPECT_TRUE(wait_for_condition([this]() { return reported_state() == "idle"; }, std::chrono::milliseconds(3000)));
 }
 
-TEST_F(FrontierControlNodeTests, ExploresFromASingleLatchedMap)
+TEST_F(FrontierControlNodeTests, ExploresFromLatchedMapAndCostmaps)
 {
-  // SLAM publishes the map only when it changes, so a robot that has not moved
-  // yet delivers one latched map and nothing more. Frontiers must still be found.
+  // A robot that has not moved yet gets one latched map from SLAM and one latched
+  // full costmap from Nav2 (sent at activation, then only on geometry changes),
+  // both published before exploring starts. Frontiers must still be found.
   nav_msgs::msg::OccupancyGrid map = build_grid(40, 40, -1);
   map.header.frame_id = "map";
   map.info.resolution = 0.1;
@@ -377,9 +378,11 @@ TEST_F(FrontierControlNodeTests, ExploresFromASingleLatchedMap)
     "/map", rclcpp::QoS(1).reliable().transient_local());
   map_pub->publish(map);
   auto costmap_pub = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
-    "/global_costmap/costmap", rclcpp::QoS(1).reliable());
+    "/global_costmap/costmap", rclcpp::QoS(1).reliable().transient_local());
+  costmap_pub->publish(costmap);
   auto local_costmap_pub = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
-    "/local_costmap/costmap", rclcpp::QoS(1).reliable());
+    "/local_costmap/costmap", rclcpp::QoS(1).reliable().transient_local());
+  local_costmap_pub->publish(costmap);
   tf2_ros::StaticTransformBroadcaster tf_broadcaster(helper_node_);
   geometry_msgs::msg::TransformStamped robot_pose;
   robot_pose.header.frame_id = "map";
@@ -398,11 +401,7 @@ TEST_F(FrontierControlNodeTests, ExploresFromASingleLatchedMap)
 
   create_node(true);
   EXPECT_TRUE(wait_for_condition(
-    [&]() {
-      costmap_pub->publish(costmap);
-      local_costmap_pub->publish(costmap);
-      return frontier_points > 0;
-    },
+    [&frontier_points]() {return frontier_points > 0;},
     std::chrono::milliseconds(5000)));
 }
 

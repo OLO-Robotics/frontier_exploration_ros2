@@ -43,6 +43,7 @@ TEST(QosUtilsTests, ResolveProfilesParsesAndInheritsLocalCostmap)
     "transient_local",
     "reliable",
     1,
+    "volatile",
     "best_effort",
     7,
     "inherit",
@@ -51,6 +52,7 @@ TEST(QosUtilsTests, ResolveProfilesParsesAndInheritsLocalCostmap)
   EXPECT_EQ(profiles.map_durability, rclcpp::DurabilityPolicy::TransientLocal);
   EXPECT_EQ(profiles.map_reliability, rclcpp::ReliabilityPolicy::Reliable);
   EXPECT_EQ(profiles.map_depth, 1u);
+  EXPECT_EQ(profiles.costmap_durability, rclcpp::DurabilityPolicy::Volatile);
   EXPECT_EQ(profiles.costmap_reliability, rclcpp::ReliabilityPolicy::BestEffort);
   EXPECT_EQ(profiles.costmap_depth, 7u);
   EXPECT_EQ(profiles.local_costmap_reliability, profiles.costmap_reliability);
@@ -74,6 +76,7 @@ TEST(QosUtilsTests, InvalidProfileValueThrows)
       "invalid",
       "reliable",
       1,
+      "transient_local",
       "reliable",
       10,
       "inherit",
@@ -84,6 +87,7 @@ TEST(QosUtilsTests, InvalidProfileValueThrows)
       "volatile",
       "reliable",
       0,
+      "transient_local",
       "reliable",
       10,
       "inherit",

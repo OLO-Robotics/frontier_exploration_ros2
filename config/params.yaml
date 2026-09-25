@@ -55,8 +55,9 @@ frontier_explorer:
         # Optional startup-only map durability autodetect helper.
         autodetect_on_startup: false
         autodetect_timeout_s: 5.0
-      # Costmap durability is fixed volatile in code.
+      # Nav2 latches its costmaps; the local costmap uses the same durability.
       costmap:
+        durability: transient_local
         reliability: reliable
         depth: 10
       local_costmap:

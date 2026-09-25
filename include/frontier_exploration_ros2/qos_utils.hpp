@@ -128,6 +128,7 @@ struct TopicQosProfiles
   rclcpp::DurabilityPolicy map_durability{rclcpp::DurabilityPolicy::TransientLocal};
   rclcpp::ReliabilityPolicy map_reliability{rclcpp::ReliabilityPolicy::Reliable};
   std::size_t map_depth{1};
+  rclcpp::DurabilityPolicy costmap_durability{rclcpp::DurabilityPolicy::TransientLocal};
   rclcpp::ReliabilityPolicy costmap_reliability{rclcpp::ReliabilityPolicy::Reliable};
   std::size_t costmap_depth{10};
   rclcpp::ReliabilityPolicy local_costmap_reliability{rclcpp::ReliabilityPolicy::Reliable};
@@ -145,21 +146,22 @@ struct TopicQosProfiles
     return qos;
   }
 
-  // Costmaps intentionally remain volatile in the public API.
+  // Nav2 latches its costmaps and sends full grids only on geometry changes, so a
+  // transient-local subscription is what receives the current grid after startup.
   [[nodiscard]] rclcpp::QoS make_costmap_qos() const
   {
     rclcpp::QoS qos{rclcpp::KeepLast(costmap_depth)};
     qos.reliability(costmap_reliability);
-    qos.durability_volatile();
+    qos.durability(costmap_durability);
     return qos;
   }
 
-  // Local costmap defaults may inherit reliability/depth from global costmap.
+  // Local costmap shares the global costmap durability and may inherit reliability/depth.
   [[nodiscard]] rclcpp::QoS make_local_costmap_qos() const
   {
     rclcpp::QoS qos{rclcpp::KeepLast(local_costmap_depth)};
     qos.reliability(local_costmap_reliability);
-    qos.durability_volatile();
+    qos.durability(costmap_durability);
     return qos;
   }
 };
@@ -169,6 +171,7 @@ struct TopicQosProfiles
   const std::string & map_qos_durability,
   const std::string & map_qos_reliability,
   int64_t map_qos_depth,
+  const std::string & costmap_qos_durability,
   const std::string & costmap_qos_reliability,
   int64_t costmap_qos_depth,
   const std::string & local_costmap_qos_reliability,
@@ -178,6 +181,7 @@ struct TopicQosProfiles
   profiles.map_durability = parse_durability_policy(map_qos_durability, "map_qos_durability");
   profiles.map_reliability = parse_reliability_policy(map_qos_reliability, "map_qos_reliability");
   profiles.map_depth = parse_qos_depth(map_qos_depth, "map_qos_depth");
+  profiles.costmap_durability = parse_durability_policy(costmap_qos_durability, "costmap_qos_durability");
   profiles.costmap_reliability = parse_reliability_policy(
     costmap_qos_reliability,
     "costmap_qos_reliability");
