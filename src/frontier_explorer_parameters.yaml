@@ -140,7 +140,11 @@ frontier_explorer_params:
         type: string
         default_value: "transient_local"
         read_only: true
-        description: "Costmap subscription durability, shared by the local costmap. Nav2 latches its costmaps."
+        description: >-
+          Costmap subscription durability, shared by the local costmap. Nav2 latches its costmaps and
+          sends a full grid only on geometry changes, so transient_local receives the current grid when
+          exploring starts. Use volatile for a source that does not latch: a transient_local subscriber
+          receives nothing from a volatile publisher.
         validation:
           one_of<>: [["transient_local", "volatile", "system_default"]]
       reliability:

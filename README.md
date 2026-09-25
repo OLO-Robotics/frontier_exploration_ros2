@@ -1631,7 +1631,7 @@ Accepted reliability values:
 | Local costmap    | global costmap's   | `inherit` from global costmap | `inherit` from global costmap |
 | Completion event | `transient_local`  | `reliable`                    | `1`                           |
 
-Nav2 latches its costmaps and republishes the full grid only when its geometry changes, so the costmap subscribers default to `transient_local`: an explorer started after Nav2 still receives the current grid instead of waiting for the next resize. Set `qos.costmap.durability` to `volatile` for a costmap source that does not latch, since a `transient_local` subscriber receives nothing from a volatile publisher. The local costmap always uses the global costmap's durability; its reliability and depth can inherit the global settings or be overridden. The costmap update subscribers use the same profile as their costmap.
+The local costmap uses the global costmap's durability. Its reliability and depth can inherit the global settings or be overridden. The costmap update subscribers use the same profile as their costmap.
 
 ### Startup-Only Map Durability Autodetect
 
@@ -1759,7 +1759,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `qos.map.depth`                   | `int`    | `1`               | Map subscription queue depth. Must be `>= 1`                                            |
 | `qos.map.autodetect_on_startup`   | `bool`   | `false`           | Enables startup-only map durability autodetect; switches at most once                   |
 | `qos.map.autodetect_timeout_s`    | `double` | `2.0`             | Timeout per autodetect attempt. Must be `>= 0.2`                                        |
-| `qos.costmap.durability`          | `string` | `transient_local` | One of `transient_local`, `volatile`, `system_default`; shared by the local costmap      |
+| `qos.costmap.durability`          | `string` | `transient_local` | One of `transient_local`, `volatile`, `system_default`                                  |
 | `qos.costmap.reliability`         | `string` | `reliable`        | One of `reliable`, `best_effort`, `system_default`                                      |
 | `qos.costmap.depth`               | `int`    | `10`              | Global costmap queue depth. Must be `>= 1`                                              |
 | `qos.local_costmap.reliability`   | `string` | `inherit`         | `inherit` copies `qos.costmap.reliability`; otherwise as above                          |
