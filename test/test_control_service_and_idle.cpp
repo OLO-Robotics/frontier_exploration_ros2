@@ -170,18 +170,16 @@ protected:
 
   void TearDown() override
   {
-    if (node_) {
-      executor_->remove_node(node_);
-      node_.reset();
-    }
-    if (helper_node_) {
-      executor_->remove_node(helper_node_);
-      helper_node_.reset();
-    }
-    executor_.reset();
+    // Shut down before destroying the node. Its TransformListener cancels and joins a
+    // spin thread on destruction, and a cancel that lands before that thread reaches
+    // spin() is lost, so the join only returns once the context is no longer ok.
     if (rclcpp::ok()) {
       rclcpp::shutdown();
     }
+    diagnostics_sub_.reset();
+    executor_.reset();
+    node_.reset();
+    helper_node_.reset();
   }
 
   void create_node(bool autostart, bool control_service_enabled = true)
